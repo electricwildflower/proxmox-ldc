@@ -9,6 +9,7 @@ from add_vm_view import build_view as build_add_vm_view
 from app_settings_view import build_view as build_app_settings_view
 from manage_containers_view import build_view as build_manage_containers_view
 from manage_vms_view import build_view as build_manage_vms_view
+from preferences import get_preference, get_preferences, set_preference
 from proxmox_client import ProxmoxAPIError, ProxmoxClient, ProxmoxSummary
 from server_settings_view import build_view as build_server_settings_view
 from shell_view import build_view as build_shell_view
@@ -23,6 +24,13 @@ from wizard import AccountStore, SetupWizard
 
 WINDOW_WIDTH = 1024
 WINDOW_HEIGHT = 768
+
+
+def apply_window_mode_from_preferences(root: tk.Tk) -> None:
+    mode = get_preference(root, "window_mode", "windowed")
+    apply_fn = getattr(root, "apply_window_mode", None)
+    if callable(apply_fn):
+        apply_fn(mode)
 
 
 def format_bytes(amount: int | float | None) -> str:
@@ -69,31 +77,6 @@ def clear_content(root: tk.Tk) -> None:
 CARD_MIN_WIDTH = 420
 AUTO_REFRESH_INTERVAL_MS = 15000
 AUTO_REFRESH_INTERVAL_MS = 15000
-
-
-def get_preferences(root: tk.Tk) -> dict:
-    account = root.app_state.get("account")  # type: ignore[index]
-    if not account:
-        return {}
-    return account.setdefault("preferences", {})
-
-
-def get_preference(root: tk.Tk, key: str, default: str) -> str:
-    prefs = get_preferences(root)
-    return prefs.get(key, default)
-
-
-def set_preference(root: tk.Tk, key: str, value: str) -> None:
-    account = root.app_state.get("account")  # type: ignore[index]
-    if not account:
-        return
-    prefs = account.setdefault("preferences", {})
-    if prefs.get(key) == value:
-        return
-    prefs[key] = value
-    store = getattr(root, "account_store", None)
-    if store:
-        store.save_account(account)
 
 
 def create_card(parent: tk.Widget, title: str) -> tuple[tk.Frame, tk.Frame]:
@@ -1707,6 +1690,7 @@ def show_setup_wizard(root: tk.Tk, store: AccountStore) -> None:
         wizard.destroy()
         root.app_state["account"] = account  # type: ignore[index]
         root.app_state["dashboard_data"] = None  # type: ignore[index]
+        apply_window_mode_from_preferences(root)
         go_home(root)
 
     wizard = SetupWizard(root.content_frame, store, on_complete)
@@ -1719,6 +1703,10 @@ def create_root_window() -> tk.Tk:
     root.title("Proxmox-LDC")
     root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
     root.configure(bg=PROXMOX_DARK)
+    default_geometry = f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}"
+    root._default_geometry = default_geometry  # type: ignore[attr-defined]
+    root._windowed_geometry = default_geometry  # type: ignore[attr-defined]
+    root._window_mode = "windowed"  # type: ignore[attr-defined]
     root.app_state = {  # type: ignore[attr-defined]
         "account": None,
         "dashboard_data": None,
@@ -1797,6 +1785,30 @@ def create_root_window() -> tk.Tk:
 
     root.content_canvas = canvas  # type: ignore[attr-defined]
     root.content_frame = content  # type: ignore[attr-defined]
+
+    def apply_window_mode(mode: str) -> None:
+        normalized = "fullscreen" if str(mode).lower() == "fullscreen" else "windowed"
+        if normalized == "fullscreen":
+            root._windowed_geometry = root.geometry()  # type: ignore[attr-defined]
+            root.attributes("-fullscreen", True)
+        else:
+            root.attributes("-fullscreen", False)
+            geometry = getattr(root, "_windowed_geometry", None) or getattr(root, "_default_geometry", None)
+            if geometry:
+                root.geometry(geometry)
+            root.state("normal")
+        root._window_mode = normalized  # type: ignore[attr-defined]
+
+    root.apply_window_mode = apply_window_mode  # type: ignore[attr-defined]
+
+    def record_windowed_geometry(event: tk.Event) -> None:
+        if getattr(root, "_window_mode", "windowed") != "windowed":
+            return
+        if root.attributes("-fullscreen"):
+            return
+        root._windowed_geometry = root.geometry()  # type: ignore[attr-defined]
+
+    root.bind("<Configure>", record_windowed_geometry)
 
     return root
 
@@ -2009,6 +2021,7 @@ def main() -> None:
             show_setup_wizard(root, store)
         else:
             root.app_state["account"] = account  # type: ignore[index]
+            apply_window_mode_from_preferences(root)
             go_home(root)
 
     root.after(0, start_app)
