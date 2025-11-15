@@ -10,4 +10,6 @@ An app for the linux desktop to interact with a Proxmox server With Proxmox-LDC 
 * Enter shell to make configurations on server
 * Connect to Proxmox server via API & SSH
 
-* Apps being worked on and full beta coming soon
+* Stop and start vm's & Containers
+* Open vim's for viewing and interacting in app
+
