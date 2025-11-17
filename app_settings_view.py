@@ -42,10 +42,12 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         return frame
 
     mode_var = tk.StringVar(value=get_preference(root, "window_mode", "windowed"))
+    minimize_var = tk.BooleanVar(value=bool(get_preference(root, "console_minimize_app", "false") == "true"))
+    console_fullscreen_var = tk.BooleanVar(value=bool(get_preference(root, "console_fullscreen", "true") == "true"))
     status_var = tk.StringVar(value="")
 
     card = tk.Frame(frame, bg=PROXMOX_MEDIUM)
-    card.pack(fill=tk.X, padx=40, pady=(0, 20))
+    card.pack(fill=tk.X, padx=40, pady=(0, 0))
 
     tk.Label(
         card,
@@ -97,13 +99,58 @@ def build_view(parent: tk.Widget) -> tk.Frame:
     create_mode_option("Windowed", "windowed", "Run Proxmox-LDC in a standard resizable window.")
     create_mode_option("Full Screen", "fullscreen", "Fill the entire display, hiding the system window chrome.")
 
+    # Console behavior
+    sep = tk.Frame(card, bg="#3c434e", height=1)
+    sep.pack(fill=tk.X, padx=20, pady=(10, 10))
+
+    tk.Label(
+        card,
+        text="Console Launch",
+        font=("Segoe UI", 16, "bold"),
+        fg=PROXMOX_LIGHT,
+        bg=PROXMOX_MEDIUM,
+    ).pack(anchor=tk.W, pady=(0, 4), padx=20)
+
+    tk.Checkbutton(
+        card,
+        text="Minimize this app while VM consoles are open",
+        variable=minimize_var,
+        font=("Segoe UI", 12),
+        bg=PROXMOX_MEDIUM,
+        fg=PROXMOX_LIGHT,
+        activebackground=PROXMOX_MEDIUM,
+        activeforeground=PROXMOX_LIGHT,
+        selectcolor=PROXMOX_DARK,
+        anchor="w",
+        padx=20,
+    ).pack(anchor=tk.W, pady=(2, 8))
+
+    tk.Checkbutton(
+        card,
+        text="Open VM consoles in fullscreen",
+        variable=console_fullscreen_var,
+        font=("Segoe UI", 12),
+        bg=PROXMOX_MEDIUM,
+        fg=PROXMOX_LIGHT,
+        activebackground=PROXMOX_MEDIUM,
+        activeforeground=PROXMOX_LIGHT,
+        selectcolor=PROXMOX_DARK,
+        anchor="w",
+        padx=20,
+    ).pack(anchor=tk.W, pady=(0, 8))
+
     def apply_mode() -> None:
         mode = "fullscreen" if mode_var.get() == "fullscreen" else "windowed"
         apply_fn = getattr(root, "apply_window_mode", None)
         if callable(apply_fn):
             apply_fn(mode)
         set_preference(root, "window_mode", mode)
-        status_var.set(f"Window mode set to {'Full Screen' if mode == 'fullscreen' else 'Windowed'}.")
+        set_preference(root, "console_minimize_app", "true" if minimize_var.get() else "false")
+        set_preference(root, "console_fullscreen", "true" if console_fullscreen_var.get() else "false")
+        status_var.set(
+            f"Window mode set to {'Full Screen' if mode == 'fullscreen' else 'Windowed'}. "
+            f"Console behavior saved."
+        )
 
     footer = tk.Frame(frame, bg=PROXMOX_DARK)
     footer.pack(fill=tk.X, padx=40)

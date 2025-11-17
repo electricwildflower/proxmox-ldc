@@ -13,6 +13,7 @@ from preferences import get_preference, get_preferences, set_preference
 from proxmox_client import ProxmoxAPIError, ProxmoxClient, ProxmoxSummary
 from server_settings_view import build_view as build_server_settings_view
 from shell_view import build_view as build_shell_view
+from vm_console_launcher import launch_vm_console
 from theme import (
     PROXMOX_ACCENT,
     PROXMOX_DARK,
@@ -253,7 +254,7 @@ def render_dashboard(root: tk.Tk, account: dict | None) -> None:
         ).pack(pady=(0, 20))
 
     cards_frame = tk.Frame(container, bg=PROXMOX_DARK)
-    cards_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 20))
+    cards_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 0))
     cards: list[tk.Frame] = []
 
     if error:
@@ -297,6 +298,14 @@ def render_dashboard(root: tk.Tk, account: dict | None) -> None:
         lambda event, cf=cards_frame, c=cards: layout_cards(cf, c),
     )
     root.app_state["dashboard_widgets"] = widgets  # type: ignore[index]
+    # Ensure content fills viewport right after dashboard is rendered
+    try:
+        refresher = getattr(root, "update_content_layout", None)
+        if callable(refresher):
+            root.after_idle(refresher)
+            root.after(130, refresher)
+    except Exception:
+        pass
 
 
 def update_dashboard_views(root: tk.Tk, account: dict | None, summary: ProxmoxSummary) -> None:
@@ -310,6 +319,13 @@ def update_dashboard_views(root: tk.Tk, account: dict | None, summary: ProxmoxSu
     widgets["storage"]["update"](summary)
     widgets["vm"]["update"](summary)
     widgets["container"]["update"](summary)
+    # Update the dock with currently running VMs
+    try:
+        refresher = getattr(root, "refresh_dock_panel", None)
+        if callable(refresher):
+            refresher()
+    except Exception:
+        pass
 
 
 def open_update_view(root: tk.Tk) -> None:
@@ -326,6 +342,8 @@ def open_update_view(root: tk.Tk) -> None:
     username = proxmox_cfg.get("username")
     password = proxmox_cfg.get("password")
     verify_ssl = proxmox_cfg.get("verify_ssl", False)
+    trusted_cert = proxmox_cfg.get("trusted_cert")
+    trusted_fp = proxmox_cfg.get("trusted_cert_fingerprint")
     node_name = summary.node_name
 
     if not all([host, username, password]):
@@ -457,7 +475,14 @@ def open_update_view(root: tk.Tk) -> None:
     def run_in_thread(action):
         def wrapper():
             try:
-                client = ProxmoxClient(host=host, username=username, password=password, verify_ssl=verify_ssl)
+                client = ProxmoxClient(
+                    host=host,
+                    username=username,
+                    password=password,
+                    verify_ssl=verify_ssl,
+                    trusted_cert=trusted_cert,
+                    trusted_fingerprint=trusted_fp,
+                )
                 return action(client)
             finally:
                 if 'client' in locals():
@@ -612,7 +637,14 @@ def open_update_view(root: tk.Tk) -> None:
             start = 0
             client = None
             try:
-                client = ProxmoxClient(host=host, username=username, password=password, verify_ssl=verify_ssl)
+                client = ProxmoxClient(
+                    host=host,
+                    username=username,
+                    password=password,
+                    verify_ssl=verify_ssl,
+                    trusted_cert=trusted_cert,
+                    trusted_fingerprint=trusted_fp,
+                )
                 stop_button.config(state=tk.NORMAL)
                 while action_state["monitoring"]:
                     logs = client.get_task_log(node_name, upid, start=start)
@@ -1703,6 +1735,11 @@ def create_root_window() -> tk.Tk:
     root.title("Proxmox-LDC")
     root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
     root.configure(bg=PROXMOX_DARK)
+    # Prevent collapsing to a tiny sliver when switching modes
+    try:
+        root.minsize(800, 600)
+    except Exception:
+        pass
     default_geometry = f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}"
     root._default_geometry = default_geometry  # type: ignore[attr-defined]
     root._windowed_geometry = default_geometry  # type: ignore[attr-defined]
@@ -1713,6 +1750,7 @@ def create_root_window() -> tk.Tk:
         "dashboard_loading": False,
         "current_view": "home",
     }
+    root.open_consoles = {}  # type: ignore[attr-defined]
     root.option_add("*Menu.background", PROXMOX_MEDIUM)
     root.option_add("*Menu.foreground", PROXMOX_LIGHT)
     root.option_add("*Menu.activeBackground", PROXMOX_ORANGE)
@@ -1721,8 +1759,299 @@ def create_root_window() -> tk.Tk:
     root.option_add("*Menu.font", "Helvetica 11")
     root.option_add("*Menu.selectColor", PROXMOX_ACCENT)
 
-    container = tk.Frame(root, bg=PROXMOX_DARK)
-    container.pack(fill=tk.BOTH, expand=True)
+    # Main area with left slide-out consoles panel and content canvas
+    main_area = tk.Frame(root, bg=PROXMOX_DARK)
+    main_area.pack(fill=tk.BOTH, expand=True)
+
+    # Left dock (collapsed by default). Use dark bg so only the rail/panel area is visible.
+    dock = tk.Frame(main_area, bg=PROXMOX_DARK, width=36, height=1)
+    dock.pack(side=tk.LEFT, fill=tk.Y)
+    dock.pack_propagate(False)
+    root.dock_frame = dock  # type: ignore[attr-defined]
+    root.dock_expanded = False  # type: ignore[attr-defined]
+    root.dock_width = 36  # type: ignore[attr-defined]
+
+    # Dock layout: left rail (fixed width) + content area (expands when open)
+    rail = tk.Frame(dock, bg=PROXMOX_MEDIUM, width=36)
+    rail.pack(side=tk.LEFT, fill=tk.Y)
+    rail.pack_propagate(False)
+    content_area = tk.Frame(dock, bg=PROXMOX_DARK, highlightthickness=0, bd=0, height=1)
+    # Do not expand vertically; anchor to top so it doesn't fill height
+    content_area.pack(side=tk.LEFT, fill=tk.X, expand=False, anchor="n", pady=(6, 0))
+    content_area.pack_propagate(False)
+    def _toggle_dock() -> None:
+        expanded = not getattr(root, "dock_expanded", False)  # type: ignore[attr-defined]
+        root.dock_expanded = expanded  # type: ignore[attr-defined]
+        if expanded:
+            root.dock_frame.config(width=220)  # type: ignore[attr-defined]
+            dock_btn.config(text="◀")
+            # Pack inside the content_area explicitly to avoid accidental global pack
+            # Use the stored reference to ensure we're using the correct frame
+            list_frame = getattr(root, "dock_list_frame", None)  # type: ignore[attr-defined]
+            if list_frame is None:
+                # Recreate if missing
+                list_frame = tk.Frame(content_area, bg=PROXMOX_MEDIUM, highlightthickness=1, highlightbackground="#3a414d")
+                root.dock_list_frame = list_frame  # type: ignore[attr-defined]
+            # Unpack from anywhere it might be
+            try:
+                list_frame.pack_forget()
+            except Exception:
+                pass
+            # CRITICAL: Ensure list_frame is a child of content_area, not main content area
+            # If it's in the wrong parent, it will appear in the wrong place
+            if list_frame.master != content_area:
+                # Reparent it to content_area
+                list_frame.pack_forget()
+                # Get all children before reparenting
+                children_info = []
+                for child in list_frame.winfo_children():
+                    children_info.append((type(child).__name__, child))
+                # Destroy and recreate with correct parent
+                list_frame.destroy()
+                list_frame = tk.Frame(content_area, bg=PROXMOX_MEDIUM, highlightthickness=1, highlightbackground="#3a414d")
+                root.dock_list_frame = list_frame  # type: ignore[attr-defined]
+                # Recreate dock_list
+                dock_list = tk.Listbox(
+                    list_frame,
+                    listvariable=root._dock_list_var,  # type: ignore[attr-defined]
+                    bg="#1f242b",
+                    fg=PROXMOX_LIGHT,
+                    highlightthickness=0,
+                    selectbackground="#ff8a65",
+                    activestyle="dotbox",
+                    relief="flat",
+                )
+                dock_scroll = tk.Scrollbar(list_frame, orient=tk.VERTICAL, command=dock_list.yview)
+                dock_list.config(yscrollcommand=dock_scroll.set)
+                dock_list.pack(side=tk.LEFT, anchor="n")
+                dock_btns = tk.Frame(list_frame, bg=PROXMOX_MEDIUM)
+                # Update root attributes
+                root.dock_list_widget = dock_list  # type: ignore[attr-defined]
+                root.dock_scroll_widget = dock_scroll  # type: ignore[attr-defined]
+                root.dock_btns_widget = dock_btns  # type: ignore[attr-defined]
+            # Ensure dock_list is packed inside list_frame
+            # Use stored reference
+            dock_list = getattr(root, "dock_list_widget", None)  # type: ignore[attr-defined]
+            if dock_list:
+                try:
+                    if not dock_list.winfo_ismapped():
+                        dock_list.pack(side=tk.LEFT, anchor="n")
+                except Exception:
+                    pass
+            # Now pack list_frame into content_area (its correct parent)
+            list_frame.pack(side=tk.TOP, anchor="n", fill=tk.X, pady=(0, 0))
+            try:
+                list_frame.pack_propagate(True)
+            except Exception:
+                pass
+            # Refresh items and set panel size after packing to prevent black bar
+            try:
+                root.update_idletasks()
+                refresh_dock_panel()
+            except Exception:
+                pass
+        else:
+            root.dock_frame.config(width=36)  # type: ignore[attr-defined]
+            dock_btn.config(text="▶")
+            # Use stored reference
+            list_frame = getattr(root, "dock_list_frame", None)  # type: ignore[attr-defined]
+            if list_frame:
+                try:
+                    list_frame.pack_forget()
+                except Exception:
+                    pass
+            # Reset content_area height when collapsed to prevent black bar
+            try:
+                content_area.configure(height=1)
+            except Exception:
+                pass
+        root.dock_width = int(root.dock_frame.cget("width"))  # type: ignore[attr-defined]
+        pos = getattr(root, "position_console_windows", None)  # type: ignore[attr-defined]
+        if callable(pos):
+            pos()
+    dock_btn = tk.Button(
+        rail,
+        text="▶",
+        command=_toggle_dock,
+        font=("Segoe UI", 10, "bold"),
+        bg=PROXMOX_MEDIUM,
+        fg=PROXMOX_LIGHT,
+        activebackground="#3a414d",
+        activeforeground=PROXMOX_LIGHT,
+        bd=0,
+        relief="flat",
+        padx=8,
+        pady=6,
+    )
+    # Center the toggle button vertically on the left rail
+    dock_btn.place(relx=0.5, rely=0.5, anchor="center")
+    list_frame = tk.Frame(content_area, bg=PROXMOX_MEDIUM, highlightthickness=1, highlightbackground="#3a414d")
+    # Store as root attribute to prevent accidental reparenting
+    root.dock_list_frame = list_frame  # type: ignore[attr-defined]
+    # hidden until expanded - explicitly don't pack it initially
+    list_frame.pack_forget()
+    root._dock_list_var = tk.StringVar(value=[])  # type: ignore[attr-defined]
+    dock_list = tk.Listbox(
+        list_frame,  # Make sure dock_list is a child of list_frame, not content_area
+        listvariable=root._dock_list_var,  # type: ignore[attr-defined]
+        bg="#1f242b",
+        fg=PROXMOX_LIGHT,
+        highlightthickness=0,
+        selectbackground="#ff8a65",
+        activestyle="dotbox",
+        relief="flat",
+    )
+    dock_scroll = tk.Scrollbar(list_frame, orient=tk.VERTICAL, command=dock_list.yview)
+    dock_list.config(yscrollcommand=dock_scroll.set)
+    # Pack without forcing vertical fill; height is determined by listbox row count
+    # Only show scrollbar when needed; listbox height will be set dynamically
+    dock_scroll.pack_forget()
+    dock_list.pack(side=tk.LEFT, anchor="n")
+    dock_btns = tk.Frame(list_frame, bg=PROXMOX_MEDIUM)
+    dock_btns.pack_forget()
+    # Store as root attributes for global access
+    root.dock_list_widget = dock_list  # type: ignore[attr-defined]
+    root.dock_scroll_widget = dock_scroll  # type: ignore[attr-defined]
+    root.dock_btns_widget = dock_btns  # type: ignore[attr-defined]
+    def _dock_focus() -> None:
+        dock_list = getattr(root, "dock_list_widget", None)  # type: ignore[attr-defined]
+        if not dock_list:
+            return
+        sel = dock_list.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        items = getattr(root, "_dock_running_vms", [])  # type: ignore[attr-defined]
+        if idx >= len(items):
+            return
+        vm = items[idx]
+        summary = root.app_state.get("dashboard_data", {}).get("summary") if hasattr(root, "app_state") else None  # type: ignore[union-attr]
+        launch_vm_console(root, vm, summary)
+    def _dock_close() -> None:
+        dock_list = getattr(root, "dock_list_widget", None)  # type: ignore[attr-defined]
+        if not dock_list:
+            return
+        sel = dock_list.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        items = getattr(root, "_dock_running_vms", [])  # type: ignore[attr-defined]
+        if idx >= len(items):
+            return
+        # No external process to terminate for in-app view; just refresh list
+        ref = getattr(root, "refresh_dock_panel", None)  # type: ignore[attr-defined]
+        if callable(ref):
+            ref()
+    tk.Button(
+        dock_btns,
+        text="Open Console",
+        command=_dock_focus,
+        font=("Segoe UI", 10),
+        bg="#2f3640",
+        fg=PROXMOX_LIGHT,
+        activebackground="#3a414d",
+        activeforeground=PROXMOX_LIGHT,
+        bd=0,
+        padx=10,
+        pady=6,
+    ).pack(side=tk.LEFT)
+    tk.Button(
+        dock_btns,
+        text="Refresh",
+        command=_dock_close,
+        font=("Segoe UI", 10),
+        bg="#2f3640",
+        fg=PROXMOX_LIGHT,
+        activebackground="#3a414d",
+        activeforeground=PROXMOX_LIGHT,
+        bd=0,
+        padx=10,
+        pady=6,
+    ).pack(side=tk.LEFT, padx=(8, 0))
+
+    # Provide a refresh function to update dock list items and dynamic height
+    def refresh_dock_panel() -> None:
+        try:
+            data = root.app_state.get("dashboard_data") or {}  # type: ignore[attr-defined]
+            summary = data.get("summary")
+            vms = []
+            if summary and getattr(summary, "vms", None) is not None:
+                vms = [vm for vm in summary.vms if str(vm.get("status", "")).lower() == "running"]
+        except Exception:
+            vms = []
+        # Store for selection handlers
+        root._dock_running_vms = vms  # type: ignore[attr-defined]
+        labels = []
+        for vm in vms:
+            vmid = vm.get("vmid")
+            name = vm.get("name") or f"VM {vmid}"
+            labels.append(f"{name} (VM {vmid})")
+        # Update list items
+        try:
+            # Persist the variable to avoid GC and ensure updates reflect
+            root._dock_list_var.set(tuple(labels))  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        # Get references from root attributes
+        dock_list = getattr(root, "dock_list_widget", None)  # type: ignore[attr-defined]
+        dock_scroll = getattr(root, "dock_scroll_widget", None)  # type: ignore[attr-defined]
+        dock_btns = getattr(root, "dock_btns_widget", None)  # type: ignore[attr-defined]
+        list_frame = getattr(root, "dock_list_frame", None)  # type: ignore[attr-defined]
+        if not all([dock_list, dock_scroll, dock_btns, list_frame]):
+            return  # Can't refresh if widgets don't exist
+        # Height equals number of items (min 1), cap to avoid oversizing
+        try:
+            rows = max(1, min(len(labels), 12))
+            dock_list.config(height=rows)
+        except Exception:
+            pass
+        # Show scrollbar only if many items
+        try:
+            if len(labels) > 10:
+                dock_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+            else:
+                dock_scroll.pack_forget()
+        except Exception:
+            pass
+        # Show/hide footer buttons based on items
+        try:
+            if labels:
+                dock_btns.pack(side=tk.BOTTOM, fill=tk.X)
+            else:
+                dock_btns.pack_forget()
+        except Exception:
+            pass
+        # Ensure the listframe is only as tall as the listbox requests
+        try:
+            list_frame.update_idletasks()
+            content_area.update_idletasks()
+            # Set list_frame height to content height so it doesn't fill vertically
+            if labels:
+                req_h = dock_list.winfo_reqheight()
+                try:
+                    btn_h = dock_btns.winfo_reqheight() if dock_btns.winfo_manager() else 0
+                except Exception:
+                    btn_h = 0
+                target_h = req_h + btn_h
+            else:
+                # When empty, use minimal height
+                target_h = 1
+            list_frame.configure(height=target_h)
+            list_frame.pack_propagate(False)
+            # Keep content area height snug to its children, but only if dock is expanded
+            if getattr(root, "dock_expanded", False):  # type: ignore[attr-defined]
+                content_area.configure(height=max(target_h + 2, 1))
+            else:
+                content_area.configure(height=1)
+        except Exception:
+            pass
+    root.refresh_dock_panel = refresh_dock_panel  # type: ignore[attr-defined]
+    # Back-compat alias if other parts call this name
+    root.refresh_consoles_panel = refresh_dock_panel  # type: ignore[attr-defined]
+
+    # Right content area with scroll canvas
+    container = tk.Frame(main_area, bg=PROXMOX_DARK)
+    container.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
     canvas = tk.Canvas(
         container,
@@ -1731,7 +2060,6 @@ def create_root_window() -> tk.Tk:
         borderwidth=0,
     )
     canvas.pack(fill=tk.BOTH, expand=True)
-
     content = tk.Frame(canvas, bg=PROXMOX_DARK)
     frame_window = canvas.create_window((0, 0), window=content, anchor="nw")
 
@@ -1773,31 +2101,99 @@ def create_root_window() -> tk.Tk:
     root.bind_all("<Home>", on_key_scroll)
     root.bind_all("<End>", on_key_scroll)
 
-    def update_scroll_region(event: tk.Event) -> None:
-        canvas.configure(scrollregion=canvas.bbox("all"))
-        canvas.itemconfig(frame_window, width=canvas.winfo_width())
+    def update_scroll_region(event: tk.Event | None) -> None:
+        # Ensure the scrollregion reflects all content and the window item
+        # stretches to at least the canvas size to avoid a blank bottom area.
+        req_h = content.winfo_reqheight()
+        cvs_h = canvas.winfo_height()
+        content_height = max(req_h, cvs_h)
+        content_width = canvas.winfo_width()
+        canvas.configure(scrollregion=(0, 0, content_width, content_height))
+        # Only force height to canvas height if content is shorter; otherwise let content drive height for scrolling
+        if req_h < cvs_h:
+            canvas.itemconfig(frame_window, width=content_width, height=content_height)
+        else:
+            canvas.itemconfig(frame_window, width=content_width, height=req_h)
 
     content.bind("<Configure>", update_scroll_region)
-    canvas.bind(
-        "<Configure>",
-        lambda event: canvas.itemconfig(frame_window, width=event.width),
-    )
+    def on_canvas_configure(event: tk.Event) -> None:
+        # Keep the embedded window sized to the canvas; taller content will scroll.
+        req_h = content.winfo_reqheight()
+        cvs_h = event.height
+        if req_h < cvs_h:
+            canvas.itemconfig(frame_window, width=event.width, height=cvs_h)
+        else:
+            canvas.itemconfig(frame_window, width=event.width, height=req_h)
+        update_scroll_region(event)
+    canvas.bind("<Configure>", on_canvas_configure)
+    # Expose a helper to refresh embedded content sizing from other views
+    try:
+        root.update_content_layout = lambda: update_scroll_region(None)  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    # Kick an initial layout update so the first draw fills the viewport
+    try:
+        root.after_idle(lambda: update_scroll_region(None))
+        # Perform a second pass shortly after to catch late geometry changes
+        root.after(120, lambda: update_scroll_region(None))
+    except Exception:
+        pass
 
     root.content_canvas = canvas  # type: ignore[attr-defined]
     root.content_frame = content  # type: ignore[attr-defined]
 
     def apply_window_mode(mode: str) -> None:
         normalized = "fullscreen" if str(mode).lower() == "fullscreen" else "windowed"
+        current = getattr(root, "_window_mode", "windowed")
+        if normalized == current and not root.attributes("-fullscreen") == (normalized == "fullscreen"):
+            # Continue to reconcile state below
+            pass
+        # Avoid WM glitches by withdrawing, changing state, then deiconify/lift
+        try:
+            root.withdraw()
+        except Exception:
+            pass
         if normalized == "fullscreen":
-            root._windowed_geometry = root.geometry()  # type: ignore[attr-defined]
+            # Remember last windowed geometry so we can restore later
+            try:
+                root._windowed_geometry = root.geometry()  # type: ignore[attr-defined]
+            except Exception:
+                pass
             root.attributes("-fullscreen", True)
         else:
             root.attributes("-fullscreen", False)
+            # Ensure the window has a sensible size and apply stored geometry
+            try:
+                root.update_idletasks()
+            except Exception:
+                pass
             geometry = getattr(root, "_windowed_geometry", None) or getattr(root, "_default_geometry", None)
-            if geometry:
-                root.geometry(geometry)
-            root.state("normal")
+            try:
+                if geometry:
+                    root.geometry(geometry)
+            except Exception:
+                pass
+            try:
+                root.state("normal")
+            except Exception:
+                pass
         root._window_mode = normalized  # type: ignore[attr-defined]
+        def _show() -> None:
+            try:
+                root.deiconify()
+                root.lift()
+                root.focus_force()
+            except Exception:
+                pass
+        root.after(50, _show)
+        # Recalculate content layout after mode change and geometry restoration
+        try:
+            refresher = getattr(root, "update_content_layout", None)
+            if callable(refresher):
+                root.after(80, refresher)
+                root.after(180, refresher)
+        except Exception:
+            pass
 
     root.apply_window_mode = apply_window_mode  # type: ignore[attr-defined]
 
@@ -1807,8 +2203,64 @@ def create_root_window() -> tk.Tk:
         if root.attributes("-fullscreen"):
             return
         root._windowed_geometry = root.geometry()  # type: ignore[attr-defined]
+        # Refresh content layout on any window geometry change to avoid black band
+        try:
+            refresher = getattr(root, "update_content_layout", None)
+            if callable(refresher):
+                # Use after_idle to debounce rapid Configure events
+                root.after_idle(refresher)
+        except Exception:
+            pass
 
     root.bind("<Configure>", record_windowed_geometry)
+
+    root.trigger_dashboard_refresh = lambda mode="full", force=True: fetch_dashboard_data(root, mode=mode, force=force)  # type: ignore[attr-defined]
+
+    # Console session helpers
+    root._console_sessions = 0  # type: ignore[attr-defined]
+    root._pre_console_window_mode = None  # type: ignore[attr-defined]
+
+    def on_console_launch() -> None:
+        try:
+            root._console_sessions += 1  # type: ignore[attr-defined]
+        except Exception:
+            root._console_sessions = 1  # type: ignore[attr-defined]
+        # If we're in fullscreen, temporarily switch to windowed so external windows aren't hidden
+        if getattr(root, "_window_mode", "windowed") == "fullscreen":
+            root._pre_console_window_mode = "fullscreen"  # type: ignore[attr-defined]
+            apply_window_mode("windowed")
+        # Do not lower/minimize here; wait until after viewer successfully launches
+
+    def on_console_exit() -> None:
+        try:
+            root._console_sessions = max(0, int(getattr(root, "_console_sessions", 1)) - 1)  # type: ignore[attr-defined]
+        except Exception:
+            root._console_sessions = 0  # type: ignore[attr-defined]
+        if root._console_sessions == 0:  # type: ignore[attr-defined]
+            # Restore previous window mode if needed
+            prev = getattr(root, "_pre_console_window_mode", None)
+            if prev == "fullscreen":
+                apply_window_mode("fullscreen")
+                root._pre_console_window_mode = None  # type: ignore[attr-defined]
+            try:
+                root.deiconify()
+                root.lift()
+            except Exception:
+                pass
+
+    def after_console_launch() -> None:
+        # Optionally lower the app only if currently windowed
+        from preferences import get_preference  # local import to avoid cycles at top
+        if get_preference(root, "console_minimize_app", "false") == "true":
+            if getattr(root, "_window_mode", "windowed") == "windowed":
+                try:
+                    root.lower()
+                except Exception:
+                    pass
+
+    root.on_console_launch = on_console_launch  # type: ignore[attr-defined]
+    root.on_console_exit = on_console_exit  # type: ignore[attr-defined]
+    root.after_console_launch = after_console_launch  # type: ignore[attr-defined]
 
     return root
 
@@ -1819,6 +2271,14 @@ def open_placeholder_view(root: tk.Tk, builder, title: str) -> None:
     root.app_state["current_view"] = title  # type: ignore[index]
     frame = builder(root.content_frame)
     frame.pack(fill=tk.BOTH, expand=True)
+    # Ensure content fills viewport right after view is rendered
+    try:
+        refresher = getattr(root, "update_content_layout", None)
+        if callable(refresher):
+            root.after_idle(refresher)
+            root.after(130, refresher)
+    except Exception:
+        pass
 
 
 def request_manual_refresh(root: tk.Tk) -> None:
@@ -1860,6 +2320,8 @@ def fetch_dashboard_data(root: tk.Tk, *, mode: str = "auto", force: bool = False
     username = proxmox.get("username")
     password = proxmox.get("password")
     verify_ssl = proxmox.get("verify_ssl", False)
+    trusted_cert = proxmox.get("trusted_cert")
+    trusted_fp = proxmox.get("trusted_cert_fingerprint")
 
     if not all([host, username, password]):
         root.app_state["dashboard_data"] = {"error": "Incomplete Proxmox credentials."}  # type: ignore[index]
@@ -1883,6 +2345,8 @@ def fetch_dashboard_data(root: tk.Tk, *, mode: str = "auto", force: bool = False
                 username=username,
                 password=password,
                 verify_ssl=verify_ssl,
+                trusted_cert=trusted_cert,
+                trusted_fingerprint=trusted_fp,
             )
             if mode == "full" or existing_summary is None:
                 summary = client.fetch_summary()
@@ -1982,6 +2446,8 @@ def setup_menu(root: tk.Tk) -> None:
     )
     menubar.add_cascade(label="Settings", menu=settings_menu)
 
+    # Consoles menu removed per new design (use left dock instead)
+
     vm_menu = tk.Menu(menubar, **menu_kwargs)
     vm_menu.add_command(
         label="Add a virtual machine",
@@ -2007,6 +2473,67 @@ def setup_menu(root: tk.Tk) -> None:
     menubar.add_cascade(label="Containers", menu=container_menu)
 
     root.config(menu=menubar)
+
+    # Helpers to manage/refresh consoles menu
+    import shutil as _sh
+    import subprocess as _sp
+
+    def _focus_console(vmid: int) -> None:
+        info = getattr(root, "open_consoles", {}).get(vmid)  # type: ignore[attr-defined]
+        if not info:
+            return
+        title = str(info.get("title", f"VM {vmid}"))
+        win_id = info.get("win_id")
+        try:
+            if win_id and _sh.which("wmctrl"):
+                _sp.call(["wmctrl", "-i", "-a", str(win_id)])
+                return
+        except Exception:
+            pass
+        if _sh.which("wmctrl"):
+            try:
+                _sp.call(["wmctrl", "-a", title])
+                return
+            except Exception:
+                pass
+        if _sh.which("xdotool"):
+            try:
+                _sp.call(["xdotool", "search", "--name", title, "windowactivate"])
+                return
+            except Exception:
+                pass
+
+    def _close_console(vmid: int) -> None:
+        info = getattr(root, "open_consoles", {}).get(vmid)  # type: ignore[attr-defined]
+        if not info:
+            return
+        proc = info.get("proc")
+        try:
+            if proc:
+                proc.terminate()
+        except Exception:
+            pass
+        try:
+            del root.open_consoles[vmid]  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        refresh_consoles_menu()
+
+    def refresh_consoles_menu() -> None:
+        m = getattr(root, "consoles_menu", None)  # type: ignore[attr-defined]
+        if not m:
+            return
+        m.delete(0, "end")
+        items = list(getattr(root, "open_consoles", {}).items())  # type: ignore[attr-defined]
+        if not items:
+            m.add_command(label="No open consoles", state="disabled")
+        else:
+            for vmid, info in items:
+                label = str(info.get("title", f"VM {vmid}"))
+                m.add_command(label=f"Focus: {label}", command=lambda vid=vmid: _focus_console(vid))
+                m.add_command(label=f"Close:  {label}", command=lambda vid=vmid: _close_console(vid))
+
+    root.refresh_consoles_menu = refresh_consoles_menu  # type: ignore[attr-defined]
 
 
 def main() -> None:

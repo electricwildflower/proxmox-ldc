@@ -2,6 +2,12 @@ import tkinter as tk
 from tkinter import messagebox
 
 from theme import PROXMOX_DARK, PROXMOX_LIGHT, PROXMOX_MEDIUM, PROXMOX_ORANGE
+from trust import (
+    fetch_server_certificate,
+    normalize_server_url,
+    prompt_trust_dialog,
+    show_certificate_details_dialog,
+)
 
 
 def build_view(parent: tk.Widget) -> tk.Frame:
@@ -48,6 +54,9 @@ def build_view(parent: tk.Widget) -> tk.Frame:
     password_var = tk.StringVar(value=proxmox.get("password", ""))
     verify_var = tk.BooleanVar(value=bool(proxmox.get("verify_ssl", False)))
     status_var = tk.StringVar(value="")
+    fingerprint_var = tk.StringVar(value=proxmox.get("trusted_cert_fingerprint", ""))
+
+    store = getattr(root, "account_store", None)
 
     form = tk.Frame(frame, bg=PROXMOX_MEDIUM)
     form.pack(fill=tk.X, padx=40, pady=(0, 20))
@@ -100,6 +109,112 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         padx=0,
     ).pack(anchor=tk.W)
 
+    def trust_server() -> None:
+        if store is None:
+            messagebox.showerror("Unavailable", "Account store is not available.", parent=root)
+            return
+        host_input = host_var.get().strip()
+        if not host_input:
+            messagebox.showerror("Missing host", "Enter a server URL before trusting.", parent=root)
+            return
+        try:
+            normalized_host, pem_cert, fingerprint = fetch_server_certificate(host_input)
+        except Exception as exc:
+            messagebox.showerror(
+                "Certificate error",
+                f"Unable to retrieve the server certificate:\n{exc}",
+                parent=root,
+            )
+            return
+        if not prompt_trust_dialog(frame, normalized_host, fingerprint):
+            status_var.set("Trust cancelled.")
+            return
+        cert_path = store.save_trusted_cert(account["username"], pem_cert)
+        proxmox["host"] = normalized_host
+        proxmox["trusted_cert"] = cert_path
+        proxmox["trusted_cert_fingerprint"] = fingerprint
+        proxmox["verify_ssl"] = True
+        host_var.set(normalized_host)
+        verify_var.set(True)
+        fingerprint_var.set(fingerprint)
+        store.save_account(account)
+        status_var.set("Server certificate trusted.")
+
+    trust_row = tk.Frame(form, bg=PROXMOX_MEDIUM)
+    trust_row.pack(fill=tk.X, pady=(12, 0))
+    tk.Button(
+        trust_row,
+        text="Fetch & Trust Certificate",
+        command=trust_server,
+        font=("Segoe UI", 11, "bold"),
+        bg=PROXMOX_ORANGE,
+        fg="white",
+        activebackground="#ff8126",
+        activeforeground="white",
+        bd=0,
+        padx=16,
+        pady=8,
+    ).pack(side=tk.LEFT)
+
+    def view_trusted_cert() -> None:
+        pem_path = proxmox.get("trusted_cert")
+        if not pem_path:
+            messagebox.showinfo("No certificate", "No trusted certificate is configured.", parent=root)
+            return
+        try:
+            show_certificate_details_dialog(frame, pem_path)
+        except Exception as exc:
+            messagebox.showerror("Unable to show certificate", str(exc), parent=root)
+
+    def clear_trust() -> None:
+        proxmox.pop("trusted_cert", None)
+        proxmox.pop("trusted_cert_fingerprint", None)
+        fingerprint_var.set("")
+        verify_var.set(False)
+        if store:
+            store.save_account(account)
+        status_var.set("Trusted certificate removed.")
+
+    actions_trust = tk.Frame(form, bg=PROXMOX_MEDIUM)
+    actions_trust.pack(fill=tk.X, pady=(8, 0))
+    tk.Button(
+        actions_trust,
+        text="View Certificate Details",
+        command=view_trusted_cert,
+        font=("Segoe UI", 10),
+        bg="#2f3640",
+        fg=PROXMOX_LIGHT,
+        activebackground="#3a414d",
+        activeforeground=PROXMOX_LIGHT,
+        bd=0,
+        padx=14,
+        pady=6,
+    ).pack(side=tk.LEFT)
+    tk.Button(
+        actions_trust,
+        text="Remove Trust",
+        command=clear_trust,
+        font=("Segoe UI", 10),
+        bg="#2f3640",
+        fg=PROXMOX_LIGHT,
+        activebackground="#3a414d",
+        activeforeground=PROXMOX_LIGHT,
+        bd=0,
+        padx=14,
+        pady=6,
+    ).pack(side=tk.LEFT, padx=(10, 0))
+
+    tk.Label(
+        trust_row,
+        textvariable=fingerprint_var,
+        font=("Segoe UI", 10),
+        fg="#cfd3da",
+        bg=PROXMOX_MEDIUM,
+        wraplength=400,
+        justify=tk.LEFT,
+        padx=20,
+    ).pack(side=tk.LEFT, padx=(15, 0))
+
     def save_settings() -> None:
         host = host_var.get().strip()
         username = user_var.get().strip()
@@ -113,9 +228,30 @@ def build_view(parent: tk.Widget) -> tk.Frame:
             )
             return
 
+        try:
+            normalized_host = normalize_server_url(host)
+        except ValueError as exc:
+            messagebox.showerror("Invalid URL", str(exc), parent=root)
+            return
+        host_var.set(normalized_host)
+
+        host_changed = normalized_host != proxmox.get("host")
+        if host_changed:
+            proxmox.pop("trusted_cert", None)
+            proxmox.pop("trusted_cert_fingerprint", None)
+            fingerprint_var.set("")
+
+        if verify_var.get() and not proxmox.get("trusted_cert"):
+            messagebox.showerror(
+                "Trust required",
+                "Please trust the server certificate before enabling verification.",
+                parent=root,
+            )
+            return
+
         proxmox.update(
             {
-                "host": host,
+                "host": normalized_host,
                 "username": username,
                 "password": password,
                 "verify_ssl": bool(verify_var.get()),

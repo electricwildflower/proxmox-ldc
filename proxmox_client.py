@@ -6,6 +6,9 @@ from typing import Any
 from urllib.parse import quote
 
 import requests
+from requests.adapters import HTTPAdapter
+import ssl
+import urllib3
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +34,28 @@ class ProxmoxSummary:
     vms: list[dict[str, Any]]
     containers: list[dict[str, Any]]
 
+class FingerprintAdapter(HTTPAdapter):
+    def __init__(self, fingerprint: str, *args, **kwargs) -> None:
+        self.fingerprint = self._normalize_fingerprint(fingerprint)
+        super().__init__(*args, **kwargs)
+
+    @staticmethod
+    def _normalize_fingerprint(value: str) -> str:
+        tokens = value.replace(":", "").strip().lower()
+        return ":".join(tokens[i : i + 2] for i in range(0, len(tokens), 2))
+
+    def init_poolmanager(self, *args, **kwargs) -> None:
+        kwargs.setdefault("assert_hostname", False)
+        kwargs["assert_fingerprint"] = self.fingerprint
+        kwargs["cert_reqs"] = ssl.CERT_NONE
+        return super().init_poolmanager(*args, **kwargs)
+
+    def proxy_manager_for(self, *args, **kwargs):
+        kwargs.setdefault("assert_hostname", False)
+        kwargs["assert_fingerprint"] = self.fingerprint
+        kwargs["cert_reqs"] = ssl.CERT_NONE
+        return super().proxy_manager_for(*args, **kwargs)
+
 
 class ProxmoxClient:
     def __init__(
@@ -40,6 +65,8 @@ class ProxmoxClient:
         password: str,
         verify_ssl: bool = False,
         realm: str | None = None,
+        trusted_cert: str | None = None,
+        trusted_fingerprint: str | None = None,
     ) -> None:
         self.base_url = _normalize_host(host)
         if realm and "@" not in username:
@@ -47,7 +74,15 @@ class ProxmoxClient:
         self.username = username
         self.password = password
         self.verify_ssl = verify_ssl
+        self.trusted_cert = trusted_cert
+        self.trusted_fingerprint = trusted_fingerprint
         self.session = requests.Session()
+        self._use_fingerprint = bool(trusted_fingerprint)
+        if self._use_fingerprint:
+            adapter = FingerprintAdapter(trusted_fingerprint)
+            self.session.mount("https://", adapter)
+            self.session.verify = False
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         self.ticket: str | None = None
         self.csrf_token: str | None = None
         self._authenticate()
@@ -57,10 +92,11 @@ class ProxmoxClient:
 
     def _authenticate(self) -> None:
         payload = {"username": self.username, "password": self.password}
+        verify_target: bool | str = False if self._use_fingerprint else (self.trusted_cert or self.verify_ssl)
         response = self.session.post(
             f"{self.base_url}/api2/json/access/ticket",
             data=payload,
-            verify=self.verify_ssl,
+            verify=verify_target,
             timeout=20,
         )
         data = self._parse_response(response)
@@ -96,13 +132,14 @@ class ProxmoxClient:
         data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         url = f"{self.base_url}/api2/json/{path.lstrip('/')}"
+        verify_target: bool | str = False if self._use_fingerprint else (self.trusted_cert or self.verify_ssl)
         response = self.session.request(
             method,
             url,
             params=params,
             data=data,
             headers=self._headers(),
-            verify=self.verify_ssl,
+            verify=verify_target,
             timeout=20,
         )
         return self._parse_response(response)
@@ -131,8 +168,32 @@ class ProxmoxClient:
     def get_vm_config(self, node: str, vmid: int | str) -> dict[str, Any]:
         return self._get(f"nodes/{node}/qemu/{vmid}/config").get("data", {})
 
+    def start_vm(self, node: str, vmid: int | str) -> dict[str, Any]:
+        return self._request("POST", f"nodes/{node}/qemu/{vmid}/status/start", data={}).get("data", {})
+
+    def stop_vm(self, node: str, vmid: int | str) -> dict[str, Any]:
+        return self._request("POST", f"nodes/{node}/qemu/{vmid}/status/stop", data={}).get("data", {})
+
+    def reboot_vm(self, node: str, vmid: int | str) -> dict[str, Any]:
+        return self._request("POST", f"nodes/{node}/qemu/{vmid}/status/reboot", data={}).get("data", {})
+
     def get_node_containers(self, node: str) -> list[dict[str, Any]]:
         return self._get(f"nodes/{node}/lxc").get("data", [])
+
+    def get_spice_config(self, node: str, vmid: int | str) -> str:
+        resp = self._request("POST", f"nodes/{node}/qemu/{vmid}/spiceproxy", data={})
+        data = resp.get("data")
+        if isinstance(data, str):
+            return data
+        # Some API variants might wrap the config differently; fail with a clear message.
+        raise ProxmoxAPIError("Unexpected SPICE config format from Proxmox API.")
+
+    def get_vnc_proxy(self, node: str, vmid: int | str) -> dict[str, Any]:
+        resp = self._request("POST", f"nodes/{node}/qemu/{vmid}/vncproxy", data={})
+        data = resp.get("data") or {}
+        if not isinstance(data, dict):
+            raise ProxmoxAPIError("Unexpected VNC proxy format from Proxmox API.")
+        return data
 
     def refresh_apt_cache(self, node: str) -> dict[str, Any]:
         return self._request("POST", f"nodes/{node}/apt/update", data={}).get("data", {})

@@ -4,6 +4,8 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
 
+from trust import fetch_server_certificate, prompt_trust_dialog
+
 from theme import (
     PROXMOX_ACCENT,
     PROXMOX_DARK,
@@ -25,6 +27,9 @@ class AccountStore:
 
     def credentials_file(self, username: str) -> Path:
         return self.account_path(username) / "account.json"
+
+    def trusted_cert_file(self, username: str) -> Path:
+        return self.account_path(username) / "trusted_server.pem"
 
     def account_exists(self, username: str) -> bool:
         return self.credentials_file(username).exists()
@@ -54,10 +59,18 @@ class AccountStore:
         account_dir = self.account_path(username)
         account_dir.mkdir(parents=True, exist_ok=True)
 
+        data = json.loads(json.dumps(account_data))
+
         with self.credentials_file(username).open("w", encoding="utf-8") as file:
-            json.dump(account_data, file, indent=2)
+            json.dump(data, file, indent=2)
 
         return account_data
+
+    def save_trusted_cert(self, username: str, pem_data: str) -> str:
+        cert_path = self.trusted_cert_file(username)
+        cert_path.parent.mkdir(parents=True, exist_ok=True)
+        cert_path.write_text(pem_data, encoding="utf-8")
+        return str(cert_path)
 
 
 def hash_password(password: str, salt: str) -> str:
@@ -398,6 +411,27 @@ class SetupWizard(tk.Frame):
         username = self.username_var.get().strip()
         password = self.password_var.get()
         salt = os.urandom(16).hex()
+        host_input = self.proxmox_host_var.get().strip()
+
+        try:
+            normalized_host, pem_cert, fingerprint = fetch_server_certificate(host_input)
+        except Exception as exc:
+            messagebox.showerror(
+                "Certificate error",
+                f"Unable to retrieve the server certificate:\n{exc}",
+                parent=self,
+            )
+            return
+
+        if not prompt_trust_dialog(self, normalized_host, fingerprint):
+            messagebox.showinfo(
+                "Trust required",
+                "You must trust the server certificate to continue.",
+                parent=self,
+            )
+            return
+
+        cert_path = self.store.save_trusted_cert(username, pem_cert)
 
         account_payload = {
             "username": username,
@@ -406,9 +440,12 @@ class SetupWizard(tk.Frame):
                 "hash": hash_password(password, salt),
             },
             "proxmox": {
-                "host": self.proxmox_host_var.get().strip(),
+                "host": normalized_host,
                 "username": self.proxmox_user_var.get().strip(),
                 "password": self.proxmox_password_var.get(),
+                "verify_ssl": True,
+                "trusted_cert": cert_path,
+                "trusted_cert_fingerprint": fingerprint,
             },
         }
 
