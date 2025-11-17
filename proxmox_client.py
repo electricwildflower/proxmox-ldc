@@ -180,6 +180,33 @@ class ProxmoxClient:
     def get_node_containers(self, node: str) -> list[dict[str, Any]]:
         return self._get(f"nodes/{node}/lxc").get("data", [])
 
+    def get_container_config(self, node: str, vmid: int | str) -> dict[str, Any]:
+        return self._get(f"nodes/{node}/lxc/{vmid}/config").get("data", {})
+
+    def start_container(self, node: str, vmid: int | str) -> dict[str, Any]:
+        return self._request("POST", f"nodes/{node}/lxc/{vmid}/status/start", data={}).get("data", {})
+
+    def stop_container(self, node: str, vmid: int | str) -> dict[str, Any]:
+        return self._request("POST", f"nodes/{node}/lxc/{vmid}/status/stop", data={}).get("data", {})
+
+    def reboot_container(self, node: str, vmid: int | str) -> dict[str, Any]:
+        return self._request("POST", f"nodes/{node}/lxc/{vmid}/status/reboot", data={}).get("data", {})
+
+    def get_container_vnc_proxy(self, node: str, vmid: int | str) -> dict[str, Any]:
+        resp = self._request("POST", f"nodes/{node}/lxc/{vmid}/vncproxy", data={})
+        data = resp.get("data") or {}
+        if not isinstance(data, dict):
+            raise ProxmoxAPIError("Unexpected VNC proxy format from Proxmox API.")
+        return data
+
+    def get_container_terminal_proxy(self, node: str, vmid: int | str) -> dict[str, Any]:
+        """Get a terminal proxy for container console access."""
+        resp = self._request("POST", f"nodes/{node}/lxc/{vmid}/termproxy", data={})
+        data = resp.get("data") or {}
+        if not isinstance(data, dict):
+            raise ProxmoxAPIError("Unexpected terminal proxy format from Proxmox API.")
+        return data
+
     def get_spice_config(self, node: str, vmid: int | str) -> str:
         resp = self._request("POST", f"nodes/{node}/qemu/{vmid}/spiceproxy", data={})
         data = resp.get("data")

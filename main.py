@@ -1,8 +1,10 @@
+import os
 import threading
 import time
 import tkinter as tk
+import webbrowser
 from pathlib import Path
-from tkinter import font, ttk
+from tkinter import font, messagebox, ttk
 from typing import Any
 
 from add_container_view import build_view as build_add_container_view
@@ -1971,6 +1973,306 @@ def open_placeholder_view(root: tk.Tk, builder, title: str) -> None:
         pass
 
 
+def open_documentation(root: tk.Tk) -> None:
+    """Open the documentation HTML file in the default web browser."""
+    # Get the directory where the script is located
+    script_dir = Path(__file__).parent.absolute()
+    doc_path = script_dir / "documentation.html"
+    
+    # If documentation doesn't exist, create a basic one
+    if not doc_path.exists():
+        create_default_documentation(doc_path)
+    
+    # Open in browser
+    try:
+        webbrowser.open(f"file://{doc_path}")
+    except Exception as exc:
+        messagebox.showerror(
+            "Error",
+            f"Failed to open documentation:\n{exc}",
+            parent=root,
+        )
+
+
+def create_default_documentation(doc_path: Path) -> None:
+    """Create a default documentation HTML file."""
+    html_content = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Proxmox-LDC Documentation</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            color: #ff6600;
+            border-bottom: 3px solid #ff6600;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #ff6600;
+            margin-top: 30px;
+            border-bottom: 2px solid #ff6600;
+            padding-bottom: 5px;
+        }
+        h3 {
+            color: #666;
+            margin-top: 20px;
+        }
+        code {
+            background-color: #f4f4f4;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            color: #c7254e;
+        }
+        pre {
+            background-color: #f4f4f4;
+            padding: 15px;
+            border-radius: 5px;
+            overflow-x: auto;
+            border-left: 4px solid #ff6600;
+        }
+        .section {
+            background-color: white;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 5px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        ul, ol {
+            margin-left: 20px;
+        }
+        li {
+            margin: 5px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>Proxmox-LDC Documentation</h1>
+    
+    <div class="section">
+        <h2>Introduction</h2>
+        <p>Proxmox-LDC is a desktop client for managing Proxmox servers. It provides an intuitive graphical interface for managing virtual machines, containers, and server resources.</p>
+    </div>
+    
+    <div class="section">
+        <h2>Getting Started</h2>
+        <h3>Initial Setup</h3>
+        <ol>
+            <li>Launch the application</li>
+            <li>Follow the setup wizard to configure your Proxmox server connection</li>
+            <li>Enter your Proxmox server URL, username, and password</li>
+            <li>Trust the server certificate when prompted</li>
+        </ol>
+        
+        <h3>Adding Multiple Servers</h3>
+        <p>You can add multiple Proxmox servers during setup or later in Server Settings. Use the server dropdown on the home dashboard to switch between servers.</p>
+    </div>
+    
+    <div class="section">
+        <h2>Features</h2>
+        
+        <h3>Dashboard</h3>
+        <p>The home dashboard provides an overview of your Proxmox server, including:</p>
+        <ul>
+            <li>Server statistics (CPU, memory, disk usage)</li>
+            <li>List of virtual machines with status indicators</li>
+            <li>List of containers with status indicators</li>
+            <li>Quick actions for VMs and containers</li>
+        </ul>
+        
+        <h3>Virtual Machine Management</h3>
+        <p>Access via <strong>Virtual Machines → Manage virtual machines</strong>:</p>
+        <ul>
+            <li>View all VMs with their current status</li>
+            <li>Start, stop, and restart VMs</li>
+            <li>Open VM console (SPICE/VNC) in separate windows</li>
+            <li>View detailed VM information and statistics</li>
+            <li>Search and sort VMs</li>
+        </ul>
+        
+        <h3>Container Management</h3>
+        <p>Access via <strong>Containers → Manage Containers</strong>:</p>
+        <ul>
+            <li>View all containers with their current status</li>
+            <li>Start, stop, and restart containers</li>
+            <li>Open container console via SSH</li>
+            <li>View detailed container information and statistics</li>
+            <li>Search and sort containers</li>
+        </ul>
+        
+        <h3>Creating Virtual Machines</h3>
+        <p>Access via <strong>Virtual Machines → Add a virtual machine</strong>:</p>
+        <p>Use the wizard to create new VMs with options for:</p>
+        <ul>
+            <li>VM name and ID</li>
+            <li>Node selection</li>
+            <li>CPU and memory allocation</li>
+            <li>Storage configuration</li>
+            <li>Network settings</li>
+            <li>ISO image selection</li>
+        </ul>
+        
+        <h3>Server Settings</h3>
+        <p>Access via <strong>Settings → Server Settings</strong>:</p>
+        <ul>
+            <li>View and edit server connection details</li>
+            <li>Add new servers</li>
+            <li>Remove servers</li>
+            <li>Manage certificate trust</li>
+            <li>Switch between multiple servers</li>
+        </ul>
+        
+        <h3>App Settings</h3>
+        <p>Access via <strong>Settings → App Settings</strong>:</p>
+        <ul>
+            <li>Configure custom configuration folder location</li>
+            <li>Manage application preferences</li>
+        </ul>
+        
+        <h3>Shell Access</h3>
+        <p>Access via <strong>Settings → Shell</strong>:</p>
+        <p>Provides SSH terminal access to your Proxmox host for advanced operations.</p>
+    </div>
+    
+    <div class="section">
+        <h2>Console Access</h2>
+        
+        <h3>VM Consoles</h3>
+        <p>Virtual machines can be accessed via SPICE or VNC consoles, which open in separate windows using <code>remote-viewer</code> (virt-viewer).</p>
+        <p><strong>Note:</strong> VMs configured with external displays cannot be accessed via console.</p>
+        
+        <h3>Container Consoles</h3>
+        <p>Containers are accessed via SSH terminal. The app will:</p>
+        <ol>
+            <li>Open a terminal window</li>
+            <li>Connect via SSH to your Proxmox host</li>
+            <li>Automatically enter the container using <code>pct enter</code></li>
+        </ol>
+        <p>You will be prompted for your SSH password (same as your Proxmox API password).</p>
+    </div>
+    
+    <div class="section">
+        <h2>Tips and Troubleshooting</h2>
+        
+        <h3>Console Not Working</h3>
+        <ul>
+            <li><strong>VMs:</strong> Ensure the VM is running and has SPICE/VNC enabled</li>
+            <li><strong>Containers:</strong> Ensure SSH is enabled on your Proxmox host and the container is running</li>
+            <li>Install <code>virt-viewer</code> for VM console access: <code>sudo apt install virt-viewer</code></li>
+        </ul>
+        
+        <h3>Certificate Errors</h3>
+        <p>If you see certificate errors, go to <strong>Settings → Server Settings</strong> and click "Trust Server Certificate".</p>
+        
+        <h3>Data Not Updating</h3>
+        <p>Use the "Refresh" button in the Manage VMs/Containers view, or refresh the dashboard to get the latest data from Proxmox.</p>
+    </div>
+    
+    <div class="section">
+        <h2>Keyboard Shortcuts</h2>
+        <ul>
+            <li>Use the menu bar to navigate between different views</li>
+            <li>Search boxes allow filtering of VMs and containers</li>
+            <li>Sort options are available in the Manage views</li>
+        </ul>
+    </div>
+    
+    <div class="section">
+        <h2>Support</h2>
+        <p>For issues, feature requests, or contributions, please refer to the project repository.</p>
+    </div>
+</body>
+</html>
+"""
+    try:
+        with open(doc_path, "w", encoding="utf-8") as f:
+            f.write(html_content)
+    except Exception:
+        pass  # If we can't create it, that's okay
+
+
+def show_about_dialog(root: tk.Tk) -> None:
+    """Show the About information in the main window."""
+    clear_content(root)
+    root.title("Proxmox-LDC | About")
+    root.app_state["current_view"] = "About"  # type: ignore[index]
+    
+    frame = tk.Frame(root.content_frame, bg=PROXMOX_DARK)
+    frame.pack(fill=tk.BOTH, expand=True)
+    
+    content = tk.Frame(frame, bg=PROXMOX_DARK)
+    content.pack(fill=tk.BOTH, expand=True, padx=40, pady=40)
+    
+    # Title
+    tk.Label(
+        content,
+        text="Proxmox-LDC",
+        font=("Segoe UI", 32, "bold"),
+        fg=PROXMOX_ORANGE,
+        bg=PROXMOX_DARK,
+    ).pack(pady=(20, 10))
+    
+    # Version
+    tk.Label(
+        content,
+        text="Version 0.1 Beta",
+        font=("Segoe UI", 14),
+        fg=PROXMOX_LIGHT,
+        bg=PROXMOX_DARK,
+    ).pack(pady=(0, 30))
+    
+    # Description
+    description = (
+        "Proxmox-LDC is a desktop client for managing Proxmox servers.\n\n"
+        "It provides an intuitive graphical interface for managing virtual\n"
+        "machines, containers, and server resources from your desktop.\n\n"
+        "Features:\n"
+        "• Multi-server support\n"
+        "• VM and container management\n"
+        "• Console access (SPICE/VNC for VMs, SSH for containers)\n"
+        "• Resource monitoring and statistics\n"
+        "• Easy-to-use wizard for creating VMs"
+    )
+    
+    tk.Label(
+        content,
+        text=description,
+        font=("Segoe UI", 12),
+        fg=PROXMOX_LIGHT,
+        bg=PROXMOX_DARK,
+        justify=tk.LEFT,
+        wraplength=800,
+    ).pack(pady=(0, 30))
+    
+    # Author/Credits
+    tk.Label(
+        content,
+        text="Developed for Proxmox server management",
+        font=("Segoe UI", 11),
+        fg="#cfd3da",
+        bg=PROXMOX_DARK,
+    ).pack(pady=(20, 0))
+    
+    # Ensure content fills viewport
+    try:
+        refresher = getattr(root, "update_content_layout", None)
+        if callable(refresher):
+            root.after_idle(refresher)
+            root.after(130, refresher)
+    except Exception:
+        pass
+
+
 def request_manual_refresh(root: tk.Tk) -> None:
     fetch_dashboard_data(root, mode="full", force=True)
 
@@ -2161,6 +2463,18 @@ def setup_menu(root: tk.Tk) -> None:
         ),
     )
     menubar.add_cascade(label="Containers", menu=container_menu)
+
+    # Help menu
+    help_menu = tk.Menu(menubar, **menu_kwargs)
+    help_menu.add_command(
+        label="Documentation",
+        command=lambda: open_documentation(root),
+    )
+    help_menu.add_command(
+        label="About",
+        command=lambda: show_about_dialog(root),
+    )
+    menubar.add_cascade(label="Help", menu=help_menu)
 
     root.config(menu=menubar)
 

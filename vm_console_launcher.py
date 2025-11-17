@@ -183,6 +183,15 @@ def _find_viewer_command() -> str | None:
     return None
 
 
+def _find_vnc_viewer_command() -> str | None:
+    """Find an alternative VNC viewer that might handle certificates better."""
+    for candidate in ("vncviewer", "tigervnc", "xtightvncviewer", "vnc"):
+        path = shutil.which(candidate)
+        if path:
+            return path
+    return None
+
+
 def _spawn_spice_viewer(
     root: tk.Misc,
     vm_name: str,
@@ -226,9 +235,80 @@ def _launch_viewer_from_config(
 
     title = f"{vm_name} – Proxmox"
     args = [viewer_cmd, "--title", title, tmp_path]
+    
+    # For containers with TLS, add options to keep window open and visible
+    # Check if this is a container connection by looking at the config
+    is_tls_connection = "tls-port" in config_text.lower() or "type=vnc" in config_text.lower()
+    
+    if is_tls_connection:
+        # Try to add options that might help with certificate dialogs
+        # Some versions of remote-viewer support these
+        try:
+            # Try to ensure the window stays open and is visible
+            import platform
+            if platform.system() == "Linux":
+                # On Linux, try to use wmctrl or xdotool to bring window to front
+                # But first, just launch and hope the dialog is visible
+                pass
+        except Exception:
+            pass
 
     try:
-        subprocess.Popen(args)
+        # For TLS/VNC connections, we need to keep the window open and visible
+        # so the certificate dialog can be seen and interacted with
+        # Don't wait for the process - let it run independently
+        proc = subprocess.Popen(
+            args,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,  # Capture stderr to check for errors
+            start_new_session=True,  # Run in new session so it doesn't close when parent closes
+        )
+        
+        # Store process reference to prevent garbage collection
+        if not hasattr(root, "_console_processes"):
+            root._console_processes = []  # type: ignore[attr-defined]
+        root._console_processes.append(proc)  # type: ignore[attr-defined]
+        
+        # For TLS connections (containers), ensure the window stays open and is visible
+        if is_tls_connection:
+            def ensure_window_visible() -> None:
+                """Try to bring the remote-viewer window to front and keep it visible."""
+                try:
+                    import shutil
+                    import subprocess as sp
+                    import time
+                    
+                    # Wait a bit for the window to appear
+                    time.sleep(0.3)
+                    
+                    # Try multiple methods to bring window to front
+                    if shutil.which("wmctrl"):
+                        # Find window by title and activate it
+                        sp.Popen(["wmctrl", "-a", title], stdout=sp.DEVNULL, stderr=sp.DEVNULL)
+                        # Also try to find by class name
+                        sp.Popen(["wmctrl", "-a", "remote-viewer"], stdout=sp.DEVNULL, stderr=sp.DEVNULL)
+                    elif shutil.which("xdotool"):
+                        # Search for window by name and activate
+                        sp.Popen(["xdotool", "search", "--name", title, "windowactivate", "--sync"], 
+                                stdout=sp.DEVNULL, stderr=sp.DEVNULL)
+                        # Also try searching for remote-viewer
+                        sp.Popen(["xdotool", "search", "--class", "remote-viewer", "windowactivate"], 
+                                stdout=sp.DEVNULL, stderr=sp.DEVNULL)
+                except Exception:
+                    pass
+            
+            # Try to bring window to front multiple times to ensure it's visible
+            try:
+                import threading
+                # Run in a separate thread so it doesn't block
+                threading.Thread(target=ensure_window_visible, daemon=True).start()
+                # Also try via root.after for GUI thread
+                root.after(300, ensure_window_visible)
+                root.after(800, ensure_window_visible)
+                root.after(1500, ensure_window_visible)
+            except Exception:
+                pass
+        
         update_status(f"Console opened for {vm_name} in a new window.")
     except FileNotFoundError:
         messagebox.showerror(
@@ -259,12 +339,20 @@ def _spawn_vnc_viewer(
     vnc_info: dict[str, Any],
     viewer_cmd: str,
     update_status: Callable[[str], None],
+    *,
+    is_container: bool = False,
 ) -> None:
     hostname = _extract_hostname(host_url)
     port = vnc_info.get("port")
+    tls_port = vnc_info.get("tlsport")
     password = vnc_info.get("password") or vnc_info.get("ticket") or vnc_info.get("vncticket")
 
-    if not hostname or not port:
+    # Prefer non-TLS port to avoid certificate trust issues
+    # Only use TLS port if regular port is not available
+    actual_port = port if port else tls_port
+    using_tls_only = not port and tls_port  # Only TLS port available
+
+    if not hostname or not actual_port:
         _show_console_warning_dialog(
             root,
             DISPLAY_ONLY_WARNING.format(vm=vm_name),
@@ -272,19 +360,135 @@ def _spawn_vnc_viewer(
         update_status("Console not available for this VM.")
         return
 
+    # For containers with only TLS port, try alternative VNC viewer that might handle certificates better
+    if is_container and using_tls_only:
+        alt_viewer = _find_vnc_viewer_command()
+        if alt_viewer:
+            # Try using alternative VNC viewer with certificate options
+            try:
+                import subprocess
+                # Some VNC viewers support -Shared, -ViewOnly, etc., but certificate handling varies
+                # Try connecting without TLS first (might work if server accepts it)
+                args = [alt_viewer, f"{hostname}:{actual_port}"]
+                if password:
+                    # Some viewers support password via stdin or file
+                    # For now, user will need to enter password manually
+                    pass
+                proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                update_status(f"Opening console for {vm_name} with alternative viewer. Enter password if prompted.")
+                return
+            except Exception:
+                pass  # Fall back to remote-viewer if alternative fails
+
+    # Use remote-viewer with .vv file (standard approach)
     lines = [
         "[virt-viewer]",
         "type=vnc",
         f"host={hostname}",
-        f"port={port}",
+        f"port={actual_port}",
         f"title={vm_name} – Proxmox",
         "delete-this-file=1",
     ]
     if password:
         lines.append(f"password={password}")
-    if vnc_info.get("tlsport"):
-        lines.append(f"tls-port={vnc_info['tlsport']}")
+    # Don't add tls-port - let remote-viewer try non-TLS first
+    # If server requires TLS, user will need to accept certificate manually
     config = "\n".join(lines) + "\n"
+
+    # For containers with TLS-only, show a clear message about the limitation
+    if is_container and using_tls_only:
+        # Show a warning dialog BEFORE trying to open, explaining the limitation
+        try:
+            dialog = tk.Toplevel(root)
+            dialog.title("Container Console Limitation")
+            dialog.configure(bg=PROXMOX_DARK)
+            dialog.transient(root)
+            dialog.grab_set()
+            dialog.resizable(False, False)
+            
+            try:
+                dialog.attributes("-topmost", True)
+            except Exception:
+                pass
+
+            tk.Label(
+                dialog,
+                text="Container Console Access Limitation",
+                font=("Segoe UI", 14, "bold"),
+                fg=PROXMOX_ORANGE,
+                bg=PROXMOX_DARK,
+            ).pack(padx=24, pady=(20, 6))
+
+            message = (
+                f"Container '{vm_name}' requires a secure TLS VNC connection.\n\n"
+                "Unfortunately, remote-viewer does not support interactive\n"
+                "certificate acceptance for VNC TLS connections, and will fail\n"
+                "with a certificate error.\n\n"
+                "Alternative options:\n"
+                "• Use SSH to access the container console\n"
+                "• Access the container via the Proxmox web interface\n"
+                "• Configure Proxmox to provide non-TLS VNC ports\n\n"
+                "Would you like to try opening the console anyway?\n"
+                "(It will likely show a certificate error)"
+            )
+            
+            tk.Label(
+                dialog,
+                text=message,
+                font=("Segoe UI", 11),
+                fg=PROXMOX_LIGHT,
+                bg=PROXMOX_DARK,
+                wraplength=500,
+                justify=tk.LEFT,
+            ).pack(padx=24, pady=(0, 16))
+
+            buttons_frame = tk.Frame(dialog, bg=PROXMOX_DARK)
+            buttons_frame.pack(padx=24, pady=(0, 20))
+            
+            result = {"continue": False}
+            
+            def cancel() -> None:
+                dialog.destroy()
+            
+            def continue_anyway() -> None:
+                result["continue"] = True
+                dialog.destroy()
+            
+            tk.Button(
+                buttons_frame,
+                text="Cancel",
+                command=cancel,
+                font=("Segoe UI", 11),
+                bg="#2f3640",
+                fg=PROXMOX_LIGHT,
+                activebackground="#3a414d",
+                activeforeground=PROXMOX_LIGHT,
+                bd=0,
+                padx=18,
+                pady=8,
+            ).pack(side=tk.LEFT, padx=(0, 10))
+            
+            tk.Button(
+                buttons_frame,
+                text="Try Anyway",
+                command=continue_anyway,
+                font=("Segoe UI", 11, "bold"),
+                bg=PROXMOX_ORANGE,
+                fg="white",
+                activebackground="#ff8126",
+                activeforeground="white",
+                bd=0,
+                padx=18,
+                pady=8,
+            ).pack(side=tk.LEFT)
+            
+            dialog.wait_window()
+            
+            if not result["continue"]:
+                update_status("Container console opening cancelled.")
+                return
+        except Exception:
+            pass  # If dialog fails, continue anyway
 
     _launch_viewer_from_config(root, vm_name, config, viewer_cmd, update_status)
 

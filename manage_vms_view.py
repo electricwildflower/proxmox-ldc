@@ -11,6 +11,454 @@ from theme import PROXMOX_DARK, PROXMOX_LIGHT, PROXMOX_MEDIUM, PROXMOX_ORANGE
 from vm_console_launcher import launch_vm_console
 
 
+def format_bytes(amount: int | float | None) -> str:
+    """Format bytes to human-readable format."""
+    if not amount:
+        return "0 B"
+    units = ["B", "KB", "MB", "GB", "TB", "PB"]
+    size = float(amount)
+    for unit in units:
+        if size < 1024.0:
+            return f"{size:.1f} {unit}"
+        size /= 1024.0
+    return f"{size:.1f} PB"
+
+
+def format_duration(seconds: int | None) -> str:
+    """Format seconds to human-readable duration."""
+    if not seconds:
+        return "N/A"
+    minutes, sec = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    days, hours = divmod(hours, 24)
+    parts: list[str] = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if not parts:
+        parts.append(f"{sec}s")
+    return " ".join(parts)
+
+
+def show_vm_details_window(
+    parent: tk.Tk,
+    account: dict,
+    node_name: str | None,
+    vmid: int,
+    vm_name: str,
+    vm_runtime: dict[str, Any],
+    rows_container: tk.Frame,
+    render_vm_rows_func,
+) -> None:
+    """Show detailed VM information in the current window."""
+    # Clear the rows container
+    for child in rows_container.winfo_children():
+        child.destroy()
+    
+    # Create a container for the details view
+    details_container = tk.Frame(rows_container, bg=PROXMOX_DARK)
+    details_container.pack(fill=tk.BOTH, expand=True)
+    
+    # Header with back button
+    header = tk.Frame(details_container, bg=PROXMOX_DARK)
+    header.pack(fill=tk.X, padx=20, pady=(20, 10))
+    
+    def go_back() -> None:
+        """Return to VM list view."""
+        for child in rows_container.winfo_children():
+            child.destroy()
+        render_vm_rows_func()
+    
+    tk.Button(
+        header,
+        text="← Back to VM List",
+        command=go_back,
+        font=("Segoe UI", 11, "bold"),
+        bg=PROXMOX_MEDIUM,
+        fg=PROXMOX_LIGHT,
+        activebackground="#3a414d",
+        activeforeground=PROXMOX_LIGHT,
+        bd=0,
+        padx=12,
+        pady=6,
+    ).pack(side=tk.LEFT)
+    
+    tk.Label(
+        header,
+        text=vm_name,
+        font=("Segoe UI", 20, "bold"),
+        fg=PROXMOX_ORANGE,
+        bg=PROXMOX_DARK,
+    ).pack(side=tk.LEFT, padx=(20, 0))
+    
+    status = vm_runtime.get("status", "unknown")
+    running = str(status).lower() == "running"
+    status_color = "#4caf50" if running else "#f44336"
+    status_text = "Running" if running else "Stopped"
+    
+    tk.Label(
+        header,
+        text=status_text,
+        font=("Segoe UI", 12, "bold"),
+        fg="white",
+        bg=status_color,
+        padx=12,
+        pady=4,
+    ).pack(side=tk.RIGHT, padx=(10, 0))
+    
+    # Main content with scrollable canvas (no scrollbar)
+    canvas = tk.Canvas(details_container, bg=PROXMOX_DARK, highlightthickness=0)
+    scrollable_frame = tk.Frame(canvas, bg=PROXMOX_DARK)
+    
+    def update_scrollregion(event: tk.Event = None) -> None:
+        """Update the canvas scroll region."""
+        canvas.update_idletasks()
+        canvas.configure(scrollregion=canvas.bbox("all"))
+    
+    scrollable_frame.bind("<Configure>", update_scrollregion)
+    
+    canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+    
+    def configure_canvas(event: tk.Event) -> None:
+        """Resize the canvas window when canvas is resized."""
+        canvas_width = event.width
+        canvas.itemconfig(canvas_window, width=canvas_width)
+        update_scrollregion()
+    
+    canvas.bind("<Configure>", configure_canvas)
+    canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    canvas.focus_set()  # Make canvas focusable for mouse wheel
+    
+    content = tk.Frame(scrollable_frame, bg=PROXMOX_DARK)
+    content.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 20))
+    
+    def add_section(title: str) -> tk.Frame:
+        """Add a section header and return a frame for content."""
+        section_frame = tk.Frame(content, bg=PROXMOX_DARK)
+        section_frame.pack(fill=tk.X, pady=(20, 10))
+        
+        tk.Label(
+            section_frame,
+            text=title,
+            font=("Segoe UI", 14, "bold"),
+            fg=PROXMOX_ORANGE,
+            bg=PROXMOX_DARK,
+        ).pack(anchor=tk.W)
+        
+        section_content = tk.Frame(section_frame, bg=PROXMOX_MEDIUM)
+        section_content.pack(fill=tk.X, pady=(8, 0))
+        
+        return section_content
+    
+    def add_info_row(parent_frame: tk.Frame, label: str, value: str) -> None:
+        """Add an info row to a section."""
+        row = tk.Frame(parent_frame, bg=PROXMOX_MEDIUM)
+        row.pack(fill=tk.X, padx=15, pady=6)
+        
+        tk.Label(
+            row,
+            text=f"{label}:",
+            font=("Segoe UI", 10, "bold"),
+            fg=PROXMOX_LIGHT,
+            bg=PROXMOX_MEDIUM,
+            width=20,
+            anchor="w",
+        ).pack(side=tk.LEFT)
+        
+        tk.Label(
+            row,
+            text=value,
+            font=("Segoe UI", 10),
+            fg="#cfd3da",
+            bg=PROXMOX_MEDIUM,
+            anchor="w",
+            wraplength=700,
+            justify=tk.LEFT,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+    
+    # Basic Information Section
+    basic_section = add_section("Basic Information")
+    add_info_row(basic_section, "VM ID", str(vmid))
+    add_info_row(basic_section, "Name", vm_name)
+    add_info_row(basic_section, "Status", status_text)
+    add_info_row(basic_section, "Node", node_name or "N/A")
+    
+    # Runtime Statistics Section
+    runtime_section = add_section("Runtime Statistics")
+    uptime = vm_runtime.get("uptime")
+    add_info_row(runtime_section, "Uptime", format_duration(uptime))
+    
+    cpu_usage = vm_runtime.get("cpu", 0)
+    add_info_row(runtime_section, "CPU Usage", f"{cpu_usage * 100:.2f}%")
+    
+    mem_max = vm_runtime.get("maxmem")
+    mem_used = vm_runtime.get("mem")
+    if mem_max and mem_used:
+        mem_percent = (mem_used / mem_max) * 100 if mem_max > 0 else 0
+        add_info_row(
+            runtime_section,
+            "Memory",
+            f"{format_bytes(mem_used)} / {format_bytes(mem_max)} ({mem_percent:.1f}%)",
+        )
+    else:
+        add_info_row(runtime_section, "Memory", format_bytes(mem_max) if mem_max else "N/A")
+    
+    disk_max = vm_runtime.get("maxdisk")
+    disk_used = vm_runtime.get("disk")
+    if disk_max and disk_used:
+        disk_percent = (disk_used / disk_max) * 100 if disk_max > 0 else 0
+        add_info_row(
+            runtime_section,
+            "Disk",
+            f"{format_bytes(disk_used)} / {format_bytes(disk_max)} ({disk_percent:.1f}%)",
+        )
+    else:
+        add_info_row(runtime_section, "Disk", format_bytes(disk_max) if disk_max else "N/A")
+    
+    pid = vm_runtime.get("pid")
+    add_info_row(runtime_section, "Process ID", str(pid) if pid else "N/A")
+    
+    # Network Information Section
+    network_section = add_section("Network Information")
+    networks = vm_runtime.get("network", [])
+    if networks:
+        for idx, net in enumerate(networks):
+            net_name = net.get("name", f"net{idx}")
+            bridge = net.get("bridge", "N/A")
+            mac = net.get("mac", "N/A")
+            model = net.get("model", "N/A")
+            tag = net.get("tag", "")
+            firewall = net.get("firewall", "")
+            rate = net.get("rate", "")
+            
+            net_info = f"Interface: {net_name}"
+            if model != "N/A":
+                net_info += f" | Model: {model}"
+            net_info += f" | Bridge: {bridge}"
+            net_info += f" | MAC: {mac}"
+            if tag:
+                net_info += f" | VLAN Tag: {tag}"
+            if firewall:
+                net_info += f" | Firewall: {firewall}"
+            if rate:
+                net_info += f" | Rate Limit: {rate}"
+            
+            add_info_row(network_section, f"Network {idx + 1}", net_info)
+    else:
+        add_info_row(network_section, "Networks", "No network interfaces configured")
+    
+    # Loading indicator for detailed config
+    loading_label = tk.Label(
+        content,
+        text="Loading detailed configuration...",
+        font=("Segoe UI", 11),
+        fg=PROXMOX_LIGHT,
+        bg=PROXMOX_DARK,
+    )
+    loading_label.pack(pady=20)
+    
+    def load_detailed_config() -> None:
+        """Load and display detailed VM configuration."""
+        proxmox_cfg = _get_active_proxmox_config(account) or {}
+        host = proxmox_cfg.get("host")
+        username = proxmox_cfg.get("username")
+        password = proxmox_cfg.get("password")
+        verify_ssl = proxmox_cfg.get("verify_ssl", False)
+        trusted_cert = proxmox_cfg.get("trusted_cert")
+        trusted_fp = proxmox_cfg.get("trusted_cert_fingerprint")
+        
+        if not all([host, username, password, node_name]):
+            loading_label.config(text="Unable to load detailed configuration: missing credentials")
+            return
+        
+        def worker() -> None:
+            client: ProxmoxClient | None = None
+            vm_config: dict[str, Any] | None = None
+            error_msg: str | None = None
+            
+            try:
+                client = ProxmoxClient(
+                    host=host,
+                    username=username,
+                    password=password,
+                    verify_ssl=verify_ssl,
+                    trusted_cert=trusted_cert,
+                    trusted_fingerprint=trusted_fp,
+                )
+                vm_config = client.get_vm_config(node_name, vmid)
+            except ProxmoxAPIError as exc:
+                error_msg = f"API error: {exc}"
+            except Exception as exc:
+                error_msg = f"Error: {exc}"
+            finally:
+                if client:
+                    client.close()
+            
+            def update_ui() -> None:
+                loading_label.destroy()
+                
+                if error_msg:
+                    tk.Label(
+                        content,
+                        text=f"Error loading configuration: {error_msg}",
+                        font=("Segoe UI", 11),
+                        fg="#f44336",
+                        bg=PROXMOX_DARK,
+                    ).pack(pady=20)
+                    update_scrollregion()
+                    return
+                
+                if not vm_config:
+                    return
+                
+                # Hardware Configuration Section
+                hw_section = add_section("Hardware Configuration")
+                
+                # CPU
+                cores = vm_config.get("cores", "N/A")
+                sockets = vm_config.get("sockets", "N/A")
+                cpu_type = vm_config.get("cpu", "N/A")
+                if cores != "N/A" and sockets != "N/A":
+                    add_info_row(hw_section, "CPU", f"{cores} cores, {sockets} sockets")
+                else:
+                    add_info_row(hw_section, "CPU Cores", str(cores))
+                    add_info_row(hw_section, "CPU Sockets", str(sockets))
+                add_info_row(hw_section, "CPU Type", str(cpu_type))
+                
+                # Memory
+                memory = vm_config.get("memory")
+                if memory:
+                    add_info_row(hw_section, "Memory", format_bytes(int(memory)))
+                
+                # Disks
+                disk_keys = [k for k in vm_config.keys() if k.startswith(("scsi", "virtio", "ide", "sata"))]
+                if disk_keys:
+                    for disk_key in sorted(disk_keys):
+                        disk_value = vm_config.get(disk_key, "")
+                        add_info_row(hw_section, f"Disk ({disk_key})", str(disk_value))
+                else:
+                    add_info_row(hw_section, "Disks", "No disks configured")
+                
+                # Network interfaces (detailed)
+                net_keys = [k for k in vm_config.keys() if k.startswith("net")]
+                if net_keys:
+                    for net_key in sorted(net_keys):
+                        net_value = vm_config.get(net_key, "")
+                        add_info_row(hw_section, f"Network ({net_key})", str(net_value))
+                
+                # BIOS/Boot
+                bios = vm_config.get("bios", "N/A")
+                add_info_row(hw_section, "BIOS", str(bios))
+                boot = vm_config.get("boot", "N/A")
+                add_info_row(hw_section, "Boot Order", str(boot))
+                
+                # Display/Graphics
+                vga = vm_config.get("vga", "N/A")
+                add_info_row(hw_section, "VGA", str(vga))
+                
+                # Other Configuration Section
+                other_section = add_section("Other Configuration")
+                
+                # OS Type
+                ostype = vm_config.get("ostype", "N/A")
+                add_info_row(other_section, "OS Type", str(ostype))
+                
+                # Machine
+                machine = vm_config.get("machine", "N/A")
+                add_info_row(other_section, "Machine Type", str(machine))
+                
+                # Agent
+                agent = vm_config.get("agent", "N/A")
+                add_info_row(other_section, "QEMU Agent", str(agent))
+                
+                # Hotplug
+                hotplug = vm_config.get("hotplug", "N/A")
+                add_info_row(other_section, "Hotplug", str(hotplug))
+                
+                # Protection
+                protection = vm_config.get("protection", "N/A")
+                add_info_row(other_section, "Protection", str(protection))
+                
+                # Tags
+                tags = vm_config.get("tags", "N/A")
+                add_info_row(other_section, "Tags", str(tags))
+                
+                # Description
+                description = vm_config.get("description", "")
+                if description:
+                    add_info_row(other_section, "Description", description)
+                
+                # All other config items
+                known_keys = {
+                    "cores", "sockets", "cpu", "memory", "bios", "boot", "vga",
+                    "ostype", "machine", "agent", "hotplug", "protection", "tags", "description",
+                }
+                known_keys.update(disk_keys)
+                known_keys.update(net_keys)
+                
+                other_keys = [k for k in vm_config.keys() if k not in known_keys and not k.startswith("unused")]
+                if other_keys:
+                    extra_section = add_section("Additional Configuration")
+                    for key in sorted(other_keys):
+                        value = vm_config.get(key, "")
+                        add_info_row(extra_section, key, str(value))
+                
+                # Update scroll region after content is added
+                parent.after(50, update_scrollregion)
+                # Rebind mouse wheel to new content
+                bind_mousewheel_to_widget(scrollable_frame)
+            
+            parent.after(0, update_ui)
+        
+        threading.Thread(target=worker, daemon=True).start()
+    
+    # Make mouse wheel work for scrolling
+    def on_mousewheel(event: tk.Event) -> None:
+        """Handle mouse wheel scrolling on Windows/Mac."""
+        if event.delta:
+            # Windows/Mac
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        return "break"
+    
+    def on_mousewheel_linux_up(event: tk.Event) -> None:
+        """Handle mouse wheel up on Linux."""
+        canvas.yview_scroll(-3, "units")
+        return "break"
+    
+    def on_mousewheel_linux_down(event: tk.Event) -> None:
+        """Handle mouse wheel down on Linux."""
+        canvas.yview_scroll(3, "units")
+        return "break"
+    
+    # Bind mouse wheel events to canvas and all child widgets
+    def bind_mousewheel_to_widget(widget: tk.Widget) -> None:
+        """Bind mouse wheel events to a widget."""
+        widget.bind("<MouseWheel>", on_mousewheel)
+        widget.bind("<Button-4>", on_mousewheel_linux_up)
+        widget.bind("<Button-5>", on_mousewheel_linux_down)
+        # Bind to all children recursively
+        for child in widget.winfo_children():
+            bind_mousewheel_to_widget(child)
+    
+    # Bind to canvas and scrollable frame initially
+    bind_mousewheel_to_widget(canvas)
+    bind_mousewheel_to_widget(scrollable_frame)
+    bind_mousewheel_to_widget(details_container)  # Also bind to container
+    
+    # Ensure canvas gets focus for mouse wheel events
+    def ensure_canvas_focus() -> None:
+        canvas.focus_set()
+        canvas.update_idletasks()
+    
+    parent.after(150, ensure_canvas_focus)
+    
+    # Start loading detailed config
+    parent.after(100, load_detailed_config)
+
+
 def _get_active_proxmox_config(account: dict | None) -> dict | None:
     """Get the active Proxmox server configuration from account."""
     if not account:
@@ -558,7 +1006,27 @@ def build_view(parent: tk.Widget) -> tk.Frame:
 
             launch_vm_console(root, vm_obj, summary_obj, status_callback=status_var.set)
 
-        action_button("View", lambda vm=vm: open_console(vm), True)
+        def view_vm_details(vm_obj: dict[str, Any]) -> None:
+            """Open a detailed VM information window."""
+            account = getattr(root, "app_state", {}).get("account") if hasattr(root, "app_state") else None
+            summary_obj = data_holder.get("summary")
+            if not account or not summary_obj:
+                messagebox.showerror("Unavailable", "Account or VM data is not ready yet.", parent=root)
+                return
+            
+            vmid = vm_obj.get("vmid")
+            if vmid is None:
+                messagebox.showerror("Unknown VM", "Unable to determine the VM ID.", parent=root)
+                return
+            
+            vm_name = vm_obj.get("name") or f"VM {vmid}"
+            node_name = getattr(summary_obj, "node_name", None) or vm_obj.get("node")
+            
+            # Show detailed VM info in current window
+            show_vm_details_window(root, account, node_name, vmid, vm_name, vm_obj, rows_container, render_vm_rows)
+        
+        action_button("Open Console", lambda vm=vm: open_console(vm), True)
+        action_button("View Info", lambda vm=vm: view_vm_details(vm), True)
 
     def refresh_data(force: bool = False) -> None:
         app_state = getattr(root, "app_state", None)
