@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import messagebox
 from typing import Any
 
+from preferences import get_preference, set_preference
 from proxmox_client import ProxmoxAPIError, ProxmoxClient
 from theme import PROXMOX_DARK, PROXMOX_LIGHT, PROXMOX_MEDIUM, PROXMOX_ORANGE
 from vm_console_launcher import launch_vm_console
@@ -96,7 +97,10 @@ def build_view(parent: tk.Widget) -> tk.Frame:
     ]
 
     label_to_key = {label: key for label, key in sort_options}
-    sort_var = tk.StringVar(value=sort_options[0][0])
+    default_sort_label = sort_options[0][0]
+    stored_sort_key = get_preference(root, "manage_vms_sort", label_to_key[default_sort_label])
+    stored_label = next((label for label, key in sort_options if key == stored_sort_key), default_sort_label)
+    sort_var = tk.StringVar(value=stored_label)
 
     tk.Label(
         search_frame,
@@ -106,11 +110,16 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         bg=PROXMOX_DARK,
     ).pack(side=tk.LEFT, padx=(10, 6))
 
+    def on_sort_change(*_args: object) -> None:
+        key = label_to_key.get(sort_var.get(), "name")
+        set_preference(root, "manage_vms_sort", key)
+        render_vm_rows()
+
     sort_dropdown = tk.OptionMenu(
         search_frame,
         sort_var,
         *label_to_key.keys(),
-        command=lambda _: render_vm_rows(),
+        command=lambda *_: on_sort_change(),
     )
 
     sort_dropdown.configure(
@@ -126,6 +135,9 @@ def build_view(parent: tk.Widget) -> tk.Frame:
     sort_dropdown["menu"].configure(font=("Segoe UI", 11), bg="#2f3640", fg=PROXMOX_LIGHT)
 
     sort_dropdown.pack(side=tk.LEFT)
+
+    # Ensure initial preference is honored after UI is built.
+    root.after_idle(on_sort_change)
 
     list_card = tk.Frame(frame, bg=PROXMOX_MEDIUM)
     list_card.pack(fill=tk.BOTH, expand=True, padx=40, pady=(0, 0))
@@ -297,7 +309,8 @@ def build_view(parent: tk.Widget) -> tk.Frame:
             messagebox.showerror("Unavailable", "Account or VM data is not ready yet.", parent=root)
             return
 
-        proxmox_cfg = account.get("proxmox", {})
+        from main import get_active_proxmox_config
+        proxmox_cfg = get_active_proxmox_config(account) or {}
         host = proxmox_cfg.get("host")
         username = proxmox_cfg.get("username")
         password = proxmox_cfg.get("password")
@@ -459,7 +472,9 @@ def build_view(parent: tk.Widget) -> tk.Frame:
                 status_var.set(f"Starting {vm_name}...")
 
                 def start_vm_worker() -> None:
-                    proxmox_cfg = account.get("proxmox", {})
+                    from main import get_active_proxmox_config
+
+                    proxmox_cfg = get_active_proxmox_config(account) or {}
                     host = proxmox_cfg.get("host")
                     username = proxmox_cfg.get("username")
                     password = proxmox_cfg.get("password")
@@ -553,6 +568,9 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         data_holder["vms"] = list(vms or [])
         status_var.set(f"{len(data_holder['vms'])} virtual machines loaded.")
         render_vm_rows()
+        dock_refresh = getattr(root, "refresh_dock_panel", None)
+        if callable(dock_refresh):
+            root.after_idle(dock_refresh)
 
     search_var.trace_add("write", lambda *_: render_vm_rows())
     refresh_data()

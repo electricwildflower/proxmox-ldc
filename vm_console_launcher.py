@@ -11,8 +11,14 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 
 from proxmox_client import ProxmoxAPIError, ProxmoxClient, ProxmoxSummary
+from theme import PROXMOX_DARK, PROXMOX_LIGHT, PROXMOX_MEDIUM, PROXMOX_ORANGE
 
 StatusCallback = Callable[[str], None] | None
+DISPLAY_ONLY_WARNING = (
+    "Proxmox reports that '{vm}' is attached to a local/physical display, so a remote console "
+    "is not available. Detach the physical display (or enable a SPICE/VNC display) if you "
+    "need to open it inside the app."
+)
 
 
 def launch_vm_console(
@@ -36,7 +42,8 @@ def launch_vm_console(
         messagebox.showerror("Console unavailable", "Account information is missing.", parent=root)
         return
 
-    proxmox_cfg = account.get("proxmox", {})
+    from main import get_active_proxmox_config
+    proxmox_cfg = get_active_proxmox_config(account) or {}
     host = proxmox_cfg.get("host")
     username = proxmox_cfg.get("username")
     password = proxmox_cfg.get("password")
@@ -85,6 +92,7 @@ def launch_vm_console(
         spice_config: str | None = None
         vnc_info: dict[str, Any] | None = None
         error_message: str | None = None
+        display_warning: str | None = None
         try:
             client = ProxmoxClient(
                 host=host,
@@ -95,13 +103,27 @@ def launch_vm_console(
                 trusted_fingerprint=trusted_fp,
             )
             try:
+                vm_config = client.get_vm_config(node_name, vmid)
+                if _vm_config_has_external_display(vm_config):
+                    display_warning = DISPLAY_ONLY_WARNING.format(vm=vm_obj.get("name") or f"VM {vmid}")
+            except ProxmoxAPIError:
+                vm_config = None
+            spice_error_text: str | None = None
+            try:
                 spice_config = client.get_spice_config(node_name, vmid)
             except ProxmoxAPIError as exc:
-                if "no spice port" in str(exc).lower():
-                    update_status("SPICE display not enabled; falling back to VNC.")
+                spice_error_text = str(exc)
+            if spice_config is None:
+                try:
+                    if spice_error_text:
+                        update_status("SPICE console not available; attempting VNC.")
                     vnc_info = client.get_vnc_proxy(node_name, vmid)
-                else:
-                    raise
+                except ProxmoxAPIError as exc:
+                    combined_errors = f"{spice_error_text or ''}\n{exc}"
+                    if _is_display_only_error(combined_errors):
+                        display_warning = DISPLAY_ONLY_WARNING.format(vm=vm_obj.get("name") or f"VM {vmid}")
+                    else:
+                        error_message = f"API error: {exc}"
         except ProxmoxAPIError as exc:
             error_message = f"API error: {exc}"
         except Exception as exc:
@@ -111,6 +133,10 @@ def launch_vm_console(
                 client.close()
 
         def finalize() -> None:
+            if display_warning:
+                _show_console_warning_dialog(root, display_warning)
+                update_status("Console not available for this VM.")
+                return
             if error_message:
                 messagebox.showerror("Console error", error_message, parent=root)
                 update_status(f"Unable to open console for {vm_name}.")
@@ -164,6 +190,13 @@ def _spawn_spice_viewer(
     viewer_cmd: str,
     update_status: Callable[[str], None],
 ) -> None:
+    if not _spice_config_supports_remote(spice_config):
+        _show_console_warning_dialog(
+            root,
+            DISPLAY_ONLY_WARNING.format(vm=vm_name),
+        )
+        update_status("Console not available for this VM.")
+        return
     _launch_viewer_from_config(root, vm_name, spice_config, viewer_cmd, update_status)
 
 
@@ -232,12 +265,11 @@ def _spawn_vnc_viewer(
     password = vnc_info.get("password") or vnc_info.get("ticket") or vnc_info.get("vncticket")
 
     if not hostname or not port:
-        messagebox.showerror(
-            "Console error",
-            "Proxmox did not return the information required to open the VNC console.",
-            parent=root,
+        _show_console_warning_dialog(
+            root,
+            DISPLAY_ONLY_WARNING.format(vm=vm_name),
         )
-        update_status("Unable to open VNC console window.")
+        update_status("Console not available for this VM.")
         return
 
     lines = [
@@ -262,6 +294,112 @@ def _extract_hostname(host: str) -> str:
     if parsed.hostname:
         return parsed.hostname
     return host.replace("https://", "").replace("http://", "").split("/")[0]
+
+
+def _is_display_only_error(message: str) -> bool:
+    text = (message or "").lower()
+    if not text:
+        return False
+    if "no spice port" in text:
+        return False
+    keywords = [
+        "display",
+        "gpu",
+        "passthrough",
+        "hostpci",
+        "no vnc",
+        "no console",
+        "console is disabled",
+        "no spice proxy",
+    ]
+    return any(keyword in text for keyword in keywords)
+
+
+def _vm_config_has_external_display(vm_config: dict[str, Any] | None) -> bool:
+    if not vm_config:
+        return False
+    vga_value = str(vm_config.get("vga") or "").lower()
+    if not vga_value:
+        return False
+    if vga_value == "none":
+        return True
+    if "type=none" in vga_value:
+        return True
+    if vga_value.startswith("serial"):
+        return True
+    if vga_value.startswith("spice"):
+        return False
+    return False
+
+
+def _spice_config_supports_remote(config: str) -> bool:
+    has_network = False
+    for raw_line in config.splitlines():
+        line = raw_line.strip()
+        if not line or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip().lower()
+        value = value.strip()
+        if key in {"host", "proxy"}:
+            has_network = True
+            if value.startswith("/") or value.startswith("unix"):
+                return False
+    return has_network
+
+
+def _show_console_warning_dialog(root: tk.Misc, message: str) -> None:
+    try:
+        dialog = tk.Toplevel(root)
+        dialog.title("Console unavailable")
+        dialog.configure(bg=PROXMOX_DARK)
+        dialog.transient(root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+        try:
+            dialog.attributes("-topmost", True)
+        except Exception:
+            pass
+
+        tk.Label(
+            dialog,
+            text="Console unavailable",
+            font=("Segoe UI", 14, "bold"),
+            fg=PROXMOX_ORANGE,
+            bg=PROXMOX_DARK,
+            anchor="w",
+        ).pack(fill=tk.X, padx=24, pady=(20, 6))
+
+        tk.Label(
+            dialog,
+            text=message,
+            font=("Segoe UI", 11),
+            fg=PROXMOX_LIGHT,
+            bg=PROXMOX_DARK,
+            wraplength=420,
+            justify=tk.LEFT,
+        ).pack(fill=tk.X, padx=24, pady=(0, 16))
+
+        actions = tk.Frame(dialog, bg=PROXMOX_DARK)
+        actions.pack(fill=tk.X, padx=24, pady=(0, 20))
+
+        tk.Button(
+            actions,
+            text="Close",
+            command=dialog.destroy,
+            font=("Segoe UI", 11, "bold"),
+            bg=PROXMOX_ORANGE,
+            fg="white",
+            activebackground="#ff8126",
+            activeforeground="white",
+            bd=0,
+            padx=18,
+            pady=8,
+        ).pack(side=tk.RIGHT)
+
+        dialog.wait_window()
+    except Exception:
+        messagebox.showwarning("Console unavailable", message, parent=root)
 
 
 def _cleanup_tempfile(path: str) -> None:

@@ -1,6 +1,7 @@
 import threading
 import time
 import tkinter as tk
+from pathlib import Path
 from tkinter import font, ttk
 from typing import Any
 
@@ -28,10 +29,9 @@ WINDOW_HEIGHT = 768
 
 
 def apply_window_mode_from_preferences(root: tk.Tk) -> None:
-    mode = get_preference(root, "window_mode", "windowed")
     apply_fn = getattr(root, "apply_window_mode", None)
     if callable(apply_fn):
-        apply_fn(mode)
+        apply_fn("windowed")
 
 
 def format_bytes(amount: int | float | None) -> str:
@@ -68,6 +68,77 @@ def format_duration(seconds: int | None) -> str:
     if not parts:
         parts.append(f"{sec}s")
     return " ".join(parts)
+
+
+def get_active_proxmox_config(account: dict | None) -> dict[str, Any] | None:
+    """Get the active Proxmox server configuration from account.
+    
+    Supports both old format (single proxmox) and new format (multiple servers).
+    Returns the active server config or the single proxmox config for backward compatibility.
+    """
+    if not account:
+        return None
+    
+    # New format: multiple servers
+    if "proxmox_servers" in account:
+        servers = account.get("proxmox_servers", [])
+        active_index = account.get("active_server_index", 0)
+        if servers and 0 <= active_index < len(servers):
+            return servers[active_index]
+        elif servers:
+            # Fallback to first server if index is invalid
+            return servers[0]
+        return None
+    
+    # Old format: single proxmox config (backward compatibility)
+    if "proxmox" in account:
+        return account["proxmox"]
+    
+    return None
+
+
+def get_all_proxmox_servers(account: dict | None) -> list[dict[str, Any]]:
+    """Get all Proxmox server configurations from account.
+    
+    Returns list of server configs, converting old format if needed.
+    """
+    if not account:
+        return []
+    
+    # New format: multiple servers
+    if "proxmox_servers" in account:
+        return account.get("proxmox_servers", [])
+    
+    # Old format: single proxmox config (convert to list for compatibility)
+    if "proxmox" in account:
+        return [account["proxmox"]]
+    
+    return []
+
+
+def set_active_server(account: dict, server_index: int) -> None:
+    """Set the active server index in the account."""
+    if "proxmox_servers" in account:
+        servers = account.get("proxmox_servers", [])
+        if 0 <= server_index < len(servers):
+            account["active_server_index"] = server_index
+
+
+def _switch_server(root: tk.Tk, account: dict, servers: list[dict[str, Any]], selected_name: str) -> None:
+    """Switch to the selected server and refresh the dashboard."""
+    # Find the server index by name
+    for idx, server in enumerate(servers):
+        server_name = server.get("name") or server.get("host", "Unknown")
+        if server_name == selected_name:
+            set_active_server(account, idx)
+            # Save the account
+            store = getattr(root, "account_store", None)
+            if store:
+                store.save_account(account)
+            # Clear dashboard data and refresh
+            root.app_state["dashboard_data"] = None  # type: ignore[index]
+            fetch_dashboard_data(root, mode="full", force=True)
+            break
 
 
 def clear_content(root: tk.Tk) -> None:
@@ -211,16 +282,67 @@ def render_dashboard(root: tk.Tk, account: dict | None) -> None:
     container = tk.Frame(root.content_frame, bg=PROXMOX_DARK)
     container.pack(fill=tk.BOTH, expand=True)
 
+    # Header with server selector
+    header_frame = tk.Frame(container, bg=PROXMOX_DARK)
+    header_frame.pack(fill=tk.X, padx=30, pady=(30, 10))
+    
+    title_frame = tk.Frame(header_frame, bg=PROXMOX_DARK)
+    title_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+    
     header_font = font.Font(family="Helvetica", size=36, weight="bold")
-
     header = tk.Label(
-        container,
+        title_frame,
         text="Proxmox-LDC",
         font=header_font,
         fg=PROXMOX_ORANGE,
         bg=PROXMOX_DARK,
     )
-    header.pack(pady=(30, 10))
+    header.pack(side=tk.LEFT)
+
+    # Server selector dropdown
+    servers = get_all_proxmox_servers(account)
+    if len(servers) > 1:
+        server_selector_frame = tk.Frame(header_frame, bg=PROXMOX_DARK)
+        server_selector_frame.pack(side=tk.RIGHT, padx=(20, 0))
+        
+        tk.Label(
+            server_selector_frame,
+            text="Server:",
+            font=("Segoe UI", 11, "bold"),
+            fg=PROXMOX_LIGHT,
+            bg=PROXMOX_DARK,
+        ).pack(side=tk.LEFT, padx=(0, 8))
+        
+        server_var = tk.StringVar()
+        active_index = account.get("active_server_index", 0) if account else 0
+        if 0 <= active_index < len(servers):
+            server_name = servers[active_index].get("name") or servers[active_index].get("host", "Unknown")
+            server_var.set(server_name)
+        
+        server_menu = tk.OptionMenu(
+            server_selector_frame,
+            server_var,
+            *[s.get("name") or s.get("host", "Unknown") for s in servers],
+            command=lambda selected: _switch_server(root, account, servers, selected),
+        )
+        server_menu.config(
+            font=("Segoe UI", 11),
+            bg=PROXMOX_MEDIUM,
+            fg=PROXMOX_LIGHT,
+            activebackground=PROXMOX_ORANGE,
+            activeforeground="white",
+            highlightthickness=0,
+            bd=0,
+            relief="flat",
+        )
+        server_menu["menu"].config(
+            font=("Segoe UI", 11),
+            bg=PROXMOX_MEDIUM,
+            fg=PROXMOX_LIGHT,
+            activebackground=PROXMOX_ORANGE,
+            activeforeground="white",
+        )
+        server_menu.pack(side=tk.LEFT)
 
     data: dict[str, Any] | None = root.app_state.get("dashboard_data")  # type: ignore[index]
     loading = root.app_state.get("dashboard_loading", False)  # type: ignore[index]
@@ -337,7 +459,7 @@ def open_update_view(root: tk.Tk) -> None:
         messagebox.showwarning("Unavailable", "No Proxmox node information available yet.")
         return
 
-    proxmox_cfg = account.get("proxmox", {})
+    proxmox_cfg = get_active_proxmox_config(account) or {}
     host = proxmox_cfg.get("host")
     username = proxmox_cfg.get("username")
     password = proxmox_cfg.get("password")
@@ -368,10 +490,15 @@ def open_update_view(root: tk.Tk) -> None:
 
     info = tk.Label(
         container,
-        text="Review pending updates, then confirm to install them via the Proxmox API.",
+        text=(
+            "Review pending updates here, then switch to the Shell tab and use the "
+            "'Run apt update & upgrade' button to perform the installation directly on the host."
+        ),
         font=("Segoe UI", 11),
         fg="#cfd3da",
         bg=PROXMOX_DARK,
+        wraplength=720,
+        justify=tk.LEFT,
     )
     info.pack(anchor=tk.W, padx=30, pady=(0, 5))
 
@@ -406,21 +533,6 @@ def open_update_view(root: tk.Tk) -> None:
 
     buttons = tk.Frame(container, bg=PROXMOX_DARK)
     buttons.pack(fill=tk.X, padx=30, pady=(0, 20))
-    install_button_container = {"packed": False}
-    install_button = tk.Button(
-        buttons,
-        text="Install updates",
-        state=tk.DISABLED,
-        font=("Segoe UI", 10, "bold"),
-        bg=PROXMOX_ORANGE,
-        fg="white",
-        activebackground="#ff8126",
-        activeforeground="white",
-        bd=0,
-        padx=12,
-        pady=6,
-    )
-    # Defer packing until we know updates exist.
 
     tk.Button(
         buttons,
@@ -435,21 +547,6 @@ def open_update_view(root: tk.Tk) -> None:
         padx=12,
         pady=6,
     ).pack(side=tk.RIGHT, padx=(10, 0))
-
-    stop_button = tk.Button(
-        buttons,
-        text="Stop",
-        state=tk.DISABLED,
-        font=("Segoe UI", 10),
-        bg="#f44336",
-        fg="white",
-        activebackground="#ff5f52",
-        activeforeground="white",
-        bd=0,
-        padx=12,
-        pady=6,
-    )
-    stop_button.pack(side=tk.RIGHT, padx=(10, 0))
 
     check_button = tk.Button(
         buttons,
@@ -501,12 +598,7 @@ def open_update_view(root: tk.Tk) -> None:
             root.after(0, lambda e=str(exc): handle_error(f"Unexpected error: {e}"))
 
     # To differentiate between check/install results.
-    action_state = {"mode": None, "updates": [], "upid": None, "monitoring": False, "logs": []}
-
-    def ensure_install_button_visible():
-        if not install_button_container["packed"]:
-            install_button.pack(side=tk.RIGHT, padx=(10, 0))
-            install_button_container["packed"] = True
+    action_state = {"mode": None, "updates": [], "logs": []}
 
     def handle_result(result):
         mode = action_state["mode"]
@@ -524,7 +616,6 @@ def open_update_view(root: tk.Tk) -> None:
             action_state["updates"] = updates
             if not updates:
                 log("System is up to date. No packages pending.")
-                install_button.config(state=tk.DISABLED)
             else:
                 log("Pending updates:\n")
                 for pkg in updates:
@@ -543,47 +634,20 @@ def open_update_view(root: tk.Tk) -> None:
                     )
                     origin = pkg.get("origin") or pkg.get("repo") or pkg.get("ChangeLogUrl") or ""
                     log(f"- {name} {version} ({origin})")
-                ensure_install_button_visible()
-                install_button.config(state=tk.NORMAL)
-                check_button.config(state=tk.NORMAL)
-        elif mode == "install":
-            if isinstance(result, dict) and result.get("manual_required"):
                 log(
-                    "Automatic upgrade is not supported on this Proxmox version.\n"
-                    "Please run on the host:\n"
-                    "  apt-get update && apt-get dist-upgrade"
+                    "\nTo install these updates, open the Shell tab and use the "
+                    "'Run apt update & upgrade' button to run the commands directly on the host."
                 )
-                install_button.config(state=tk.NORMAL)
                 check_button.config(state=tk.NORMAL)
-                return
-            task_data = result.get("task") if isinstance(result, dict) else result
-            upid = (
-                task_data
-                if isinstance(task_data, str)
-                else task_data.get("upid")
-                if isinstance(task_data, dict)
-                else None
-            )
-            if upid:
-                action_state["upid"] = upid
-                log(f"Update task started: {upid}")
-                start_task_monitor(upid)
-            else:
-                log("Update command triggered successfully. Monitor Proxmox task log for progress.")
-            install_button.config(state=tk.DISABLED)
 
     def handle_error(message: str) -> None:
         log(f"Error: {message}")
-        action_state["monitoring"] = False
-        stop_button.config(state=tk.DISABLED)
         check_button.config(state=tk.NORMAL)
-        install_button.config(state=tk.DISABLED)
 
     def check_updates() -> None:
         action_state["mode"] = "check"
         log("Refreshing package cache and checking for updates...")
         check_button.config(state=tk.DISABLED)
-        install_button.config(state=tk.DISABLED)
 
         def action(client: ProxmoxClient):
             client.refresh_apt_cache(node_name)
@@ -593,91 +657,6 @@ def open_update_view(root: tk.Tk) -> None:
 
         run_in_thread(action)
 
-    def install_updates() -> None:
-        if not action_state["updates"]:
-            messagebox.showinfo("No updates", "No updates are queued for installation.")
-            return
-        if not confirm_dialog("Install updates", "Install all pending updates now?", root):
-            return
-
-        action_state["mode"] = "install"
-        log("Starting update installation...")
-        check_button.config(state=tk.DISABLED)
-        install_button.config(state=tk.DISABLED)
-
-        def action(client: ProxmoxClient):
-            try:
-                return {"task": client.upgrade_packages(node_name)}
-            except ProxmoxAPIError as exc:
-                if "apt/upgrade" in str(exc):
-                    return {"manual_required": True, "error": str(exc)}
-                raise
-
-        run_in_thread(action)
-
-    def append_task_logs(entries: list[dict[str, Any]]) -> None:
-        for entry in entries:
-            line = entry.get("t")
-            if line:
-                log(line.rstrip())
-
-    def finalize_task(status: dict[str, Any]) -> None:
-        action_state["monitoring"] = False
-        exitstatus = status.get("exitstatus") or status.get("status")
-        log(f"Task finished with status: {exitstatus}")
-        check_button.config(state=tk.NORMAL)
-        stop_button.config(state=tk.DISABLED)
-
-    def start_task_monitor(upid: str) -> None:
-        if action_state.get("monitoring"):
-            return
-        action_state["monitoring"] = True
-
-        def monitor():
-            start = 0
-            client = None
-            try:
-                client = ProxmoxClient(
-                    host=host,
-                    username=username,
-                    password=password,
-                    verify_ssl=verify_ssl,
-                    trusted_cert=trusted_cert,
-                    trusted_fingerprint=trusted_fp,
-                )
-                stop_button.config(state=tk.NORMAL)
-                while action_state["monitoring"]:
-                    logs = client.get_task_log(node_name, upid, start=start)
-                    if logs:
-                        start = logs[-1].get("n", start) + 1
-                        root.after(0, lambda entries=list(logs): append_task_logs(entries))
-                    status = client.get_task_status(node_name, upid)
-                    if status.get("status") == "stopped":
-                        root.after(0, lambda st=status: finalize_task(st))
-                        break
-                    time.sleep(2)
-            except ProxmoxAPIError as exc:
-                root.after(0, lambda e=str(exc): handle_error(e))
-            except Exception as exc:  # pragma: no cover
-                root.after(0, lambda e=str(exc): handle_error(f"Unexpected error: {e}"))
-            finally:
-                action_state["monitoring"] = False
-                stop_button.config(state=tk.DISABLED)
-                if client:
-                    client.close()
-
-        threading.Thread(target=monitor, daemon=True).start()
-
-    def stop_task() -> None:
-        upid = action_state.get("upid")
-        if not upid:
-            return
-
-        def action(client: ProxmoxClient):
-            client.stop_task(node_name, upid)
-
-        run_in_thread(action)
-        log("Attempting to stop the update task...")
 
     def update_repo_alert(message: str, instructions: bool = False) -> None:
         repo_alert.config(text=message)
@@ -702,9 +681,7 @@ def open_update_view(root: tk.Tk) -> None:
             if "enterprise" in name and status == "enabled":
                 return False
         return True
-    stop_button.config(command=stop_task)
     check_button.config(command=check_updates)
-    install_button.config(command=install_updates)
     check_updates()
 
 def render_specs_section(
@@ -759,7 +736,9 @@ def render_specs_section(
 
         node_name = summary_obj.node_name or "Unknown"
         add_stat_row(grid, "Node", node_name)
-        add_stat_row(grid, "Host", account_obj["proxmox"]["host"])
+        proxmox_cfg = get_active_proxmox_config(account_obj)
+        if proxmox_cfg:
+            add_stat_row(grid, "Host", proxmox_cfg.get("host", "Unknown"))
 
         node_status = summary_obj.node_status or {}
         add_stat_row(grid, "Status", node_status.get("status", "Unknown"))
@@ -1763,293 +1742,10 @@ def create_root_window() -> tk.Tk:
     main_area = tk.Frame(root, bg=PROXMOX_DARK)
     main_area.pack(fill=tk.BOTH, expand=True)
 
-    # Left dock (collapsed by default). Use dark bg so only the rail/panel area is visible.
-    dock = tk.Frame(main_area, bg=PROXMOX_DARK, width=36, height=1)
-    dock.pack(side=tk.LEFT, fill=tk.Y)
-    dock.pack_propagate(False)
-    root.dock_frame = dock  # type: ignore[attr-defined]
-    root.dock_expanded = False  # type: ignore[attr-defined]
-    root.dock_width = 36  # type: ignore[attr-defined]
+    # Without a dock, the main content spans the entire area.
+    root.refresh_dock_panel = lambda: None  # type: ignore[attr-defined]
+    root.refresh_consoles_panel = lambda: None  # type: ignore[attr-defined]
 
-    # Dock layout: left rail (fixed width) + content area (expands when open)
-    rail = tk.Frame(dock, bg=PROXMOX_MEDIUM, width=36)
-    rail.pack(side=tk.LEFT, fill=tk.Y)
-    rail.pack_propagate(False)
-    content_area = tk.Frame(dock, bg=PROXMOX_DARK, highlightthickness=0, bd=0, height=1)
-    # Do not expand vertically; anchor to top so it doesn't fill height
-    content_area.pack(side=tk.LEFT, fill=tk.X, expand=False, anchor="n", pady=(6, 0))
-    content_area.pack_propagate(False)
-    def _toggle_dock() -> None:
-        expanded = not getattr(root, "dock_expanded", False)  # type: ignore[attr-defined]
-        root.dock_expanded = expanded  # type: ignore[attr-defined]
-        if expanded:
-            root.dock_frame.config(width=220)  # type: ignore[attr-defined]
-            dock_btn.config(text="◀")
-            # Pack inside the content_area explicitly to avoid accidental global pack
-            # Use the stored reference to ensure we're using the correct frame
-            list_frame = getattr(root, "dock_list_frame", None)  # type: ignore[attr-defined]
-            if list_frame is None:
-                # Recreate if missing
-                list_frame = tk.Frame(content_area, bg=PROXMOX_MEDIUM, highlightthickness=1, highlightbackground="#3a414d")
-                root.dock_list_frame = list_frame  # type: ignore[attr-defined]
-            # Unpack from anywhere it might be
-            try:
-                list_frame.pack_forget()
-            except Exception:
-                pass
-            # CRITICAL: Ensure list_frame is a child of content_area, not main content area
-            # If it's in the wrong parent, it will appear in the wrong place
-            if list_frame.master != content_area:
-                # Reparent it to content_area
-                list_frame.pack_forget()
-                # Get all children before reparenting
-                children_info = []
-                for child in list_frame.winfo_children():
-                    children_info.append((type(child).__name__, child))
-                # Destroy and recreate with correct parent
-                list_frame.destroy()
-                list_frame = tk.Frame(content_area, bg=PROXMOX_MEDIUM, highlightthickness=1, highlightbackground="#3a414d")
-                root.dock_list_frame = list_frame  # type: ignore[attr-defined]
-                # Recreate dock_list
-                dock_list = tk.Listbox(
-                    list_frame,
-                    listvariable=root._dock_list_var,  # type: ignore[attr-defined]
-                    bg="#1f242b",
-                    fg=PROXMOX_LIGHT,
-                    highlightthickness=0,
-                    selectbackground="#ff8a65",
-                    activestyle="dotbox",
-                    relief="flat",
-                )
-                dock_scroll = tk.Scrollbar(list_frame, orient=tk.VERTICAL, command=dock_list.yview)
-                dock_list.config(yscrollcommand=dock_scroll.set)
-                dock_list.pack(side=tk.LEFT, anchor="n")
-                dock_btns = tk.Frame(list_frame, bg=PROXMOX_MEDIUM)
-                # Update root attributes
-                root.dock_list_widget = dock_list  # type: ignore[attr-defined]
-                root.dock_scroll_widget = dock_scroll  # type: ignore[attr-defined]
-                root.dock_btns_widget = dock_btns  # type: ignore[attr-defined]
-            # Ensure dock_list is packed inside list_frame
-            # Use stored reference
-            dock_list = getattr(root, "dock_list_widget", None)  # type: ignore[attr-defined]
-            if dock_list:
-                try:
-                    if not dock_list.winfo_ismapped():
-                        dock_list.pack(side=tk.LEFT, anchor="n")
-                except Exception:
-                    pass
-            # Now pack list_frame into content_area (its correct parent)
-            list_frame.pack(side=tk.TOP, anchor="n", fill=tk.X, pady=(0, 0))
-            try:
-                list_frame.pack_propagate(True)
-            except Exception:
-                pass
-            # Refresh items and set panel size after packing to prevent black bar
-            try:
-                root.update_idletasks()
-                refresh_dock_panel()
-            except Exception:
-                pass
-        else:
-            root.dock_frame.config(width=36)  # type: ignore[attr-defined]
-            dock_btn.config(text="▶")
-            # Use stored reference
-            list_frame = getattr(root, "dock_list_frame", None)  # type: ignore[attr-defined]
-            if list_frame:
-                try:
-                    list_frame.pack_forget()
-                except Exception:
-                    pass
-            # Reset content_area height when collapsed to prevent black bar
-            try:
-                content_area.configure(height=1)
-            except Exception:
-                pass
-        root.dock_width = int(root.dock_frame.cget("width"))  # type: ignore[attr-defined]
-        pos = getattr(root, "position_console_windows", None)  # type: ignore[attr-defined]
-        if callable(pos):
-            pos()
-    dock_btn = tk.Button(
-        rail,
-        text="▶",
-        command=_toggle_dock,
-        font=("Segoe UI", 10, "bold"),
-        bg=PROXMOX_MEDIUM,
-        fg=PROXMOX_LIGHT,
-        activebackground="#3a414d",
-        activeforeground=PROXMOX_LIGHT,
-        bd=0,
-        relief="flat",
-        padx=8,
-        pady=6,
-    )
-    # Center the toggle button vertically on the left rail
-    dock_btn.place(relx=0.5, rely=0.5, anchor="center")
-    list_frame = tk.Frame(content_area, bg=PROXMOX_MEDIUM, highlightthickness=1, highlightbackground="#3a414d")
-    # Store as root attribute to prevent accidental reparenting
-    root.dock_list_frame = list_frame  # type: ignore[attr-defined]
-    # hidden until expanded - explicitly don't pack it initially
-    list_frame.pack_forget()
-    root._dock_list_var = tk.StringVar(value=[])  # type: ignore[attr-defined]
-    dock_list = tk.Listbox(
-        list_frame,  # Make sure dock_list is a child of list_frame, not content_area
-        listvariable=root._dock_list_var,  # type: ignore[attr-defined]
-        bg="#1f242b",
-        fg=PROXMOX_LIGHT,
-        highlightthickness=0,
-        selectbackground="#ff8a65",
-        activestyle="dotbox",
-        relief="flat",
-    )
-    dock_scroll = tk.Scrollbar(list_frame, orient=tk.VERTICAL, command=dock_list.yview)
-    dock_list.config(yscrollcommand=dock_scroll.set)
-    # Pack without forcing vertical fill; height is determined by listbox row count
-    # Only show scrollbar when needed; listbox height will be set dynamically
-    dock_scroll.pack_forget()
-    dock_list.pack(side=tk.LEFT, anchor="n")
-    dock_btns = tk.Frame(list_frame, bg=PROXMOX_MEDIUM)
-    dock_btns.pack_forget()
-    # Store as root attributes for global access
-    root.dock_list_widget = dock_list  # type: ignore[attr-defined]
-    root.dock_scroll_widget = dock_scroll  # type: ignore[attr-defined]
-    root.dock_btns_widget = dock_btns  # type: ignore[attr-defined]
-    def _dock_focus() -> None:
-        dock_list = getattr(root, "dock_list_widget", None)  # type: ignore[attr-defined]
-        if not dock_list:
-            return
-        sel = dock_list.curselection()
-        if not sel:
-            return
-        idx = sel[0]
-        items = getattr(root, "_dock_running_vms", [])  # type: ignore[attr-defined]
-        if idx >= len(items):
-            return
-        vm = items[idx]
-        summary = root.app_state.get("dashboard_data", {}).get("summary") if hasattr(root, "app_state") else None  # type: ignore[union-attr]
-        launch_vm_console(root, vm, summary)
-    def _dock_close() -> None:
-        dock_list = getattr(root, "dock_list_widget", None)  # type: ignore[attr-defined]
-        if not dock_list:
-            return
-        sel = dock_list.curselection()
-        if not sel:
-            return
-        idx = sel[0]
-        items = getattr(root, "_dock_running_vms", [])  # type: ignore[attr-defined]
-        if idx >= len(items):
-            return
-        # No external process to terminate for in-app view; just refresh list
-        ref = getattr(root, "refresh_dock_panel", None)  # type: ignore[attr-defined]
-        if callable(ref):
-            ref()
-    tk.Button(
-        dock_btns,
-        text="Open Console",
-        command=_dock_focus,
-        font=("Segoe UI", 10),
-        bg="#2f3640",
-        fg=PROXMOX_LIGHT,
-        activebackground="#3a414d",
-        activeforeground=PROXMOX_LIGHT,
-        bd=0,
-        padx=10,
-        pady=6,
-    ).pack(side=tk.LEFT)
-    tk.Button(
-        dock_btns,
-        text="Refresh",
-        command=_dock_close,
-        font=("Segoe UI", 10),
-        bg="#2f3640",
-        fg=PROXMOX_LIGHT,
-        activebackground="#3a414d",
-        activeforeground=PROXMOX_LIGHT,
-        bd=0,
-        padx=10,
-        pady=6,
-    ).pack(side=tk.LEFT, padx=(8, 0))
-
-    # Provide a refresh function to update dock list items and dynamic height
-    def refresh_dock_panel() -> None:
-        try:
-            data = root.app_state.get("dashboard_data") or {}  # type: ignore[attr-defined]
-            summary = data.get("summary")
-            vms = []
-            if summary and getattr(summary, "vms", None) is not None:
-                vms = [vm for vm in summary.vms if str(vm.get("status", "")).lower() == "running"]
-        except Exception:
-            vms = []
-        # Store for selection handlers
-        root._dock_running_vms = vms  # type: ignore[attr-defined]
-        labels = []
-        for vm in vms:
-            vmid = vm.get("vmid")
-            name = vm.get("name") or f"VM {vmid}"
-            labels.append(f"{name} (VM {vmid})")
-        # Update list items
-        try:
-            # Persist the variable to avoid GC and ensure updates reflect
-            root._dock_list_var.set(tuple(labels))  # type: ignore[attr-defined]
-        except Exception:
-            pass
-        # Get references from root attributes
-        dock_list = getattr(root, "dock_list_widget", None)  # type: ignore[attr-defined]
-        dock_scroll = getattr(root, "dock_scroll_widget", None)  # type: ignore[attr-defined]
-        dock_btns = getattr(root, "dock_btns_widget", None)  # type: ignore[attr-defined]
-        list_frame = getattr(root, "dock_list_frame", None)  # type: ignore[attr-defined]
-        if not all([dock_list, dock_scroll, dock_btns, list_frame]):
-            return  # Can't refresh if widgets don't exist
-        # Height equals number of items (min 1), cap to avoid oversizing
-        try:
-            rows = max(1, min(len(labels), 12))
-            dock_list.config(height=rows)
-        except Exception:
-            pass
-        # Show scrollbar only if many items
-        try:
-            if len(labels) > 10:
-                dock_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-            else:
-                dock_scroll.pack_forget()
-        except Exception:
-            pass
-        # Show/hide footer buttons based on items
-        try:
-            if labels:
-                dock_btns.pack(side=tk.BOTTOM, fill=tk.X)
-            else:
-                dock_btns.pack_forget()
-        except Exception:
-            pass
-        # Ensure the listframe is only as tall as the listbox requests
-        try:
-            list_frame.update_idletasks()
-            content_area.update_idletasks()
-            # Set list_frame height to content height so it doesn't fill vertically
-            if labels:
-                req_h = dock_list.winfo_reqheight()
-                try:
-                    btn_h = dock_btns.winfo_reqheight() if dock_btns.winfo_manager() else 0
-                except Exception:
-                    btn_h = 0
-                target_h = req_h + btn_h
-            else:
-                # When empty, use minimal height
-                target_h = 1
-            list_frame.configure(height=target_h)
-            list_frame.pack_propagate(False)
-            # Keep content area height snug to its children, but only if dock is expanded
-            if getattr(root, "dock_expanded", False):  # type: ignore[attr-defined]
-                content_area.configure(height=max(target_h + 2, 1))
-            else:
-                content_area.configure(height=1)
-        except Exception:
-            pass
-    root.refresh_dock_panel = refresh_dock_panel  # type: ignore[attr-defined]
-    # Back-compat alias if other parts call this name
-    root.refresh_consoles_panel = refresh_dock_panel  # type: ignore[attr-defined]
-
-    # Right content area with scroll canvas
     container = tk.Frame(main_area, bg=PROXMOX_DARK)
     container.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
@@ -2249,14 +1945,8 @@ def create_root_window() -> tk.Tk:
                 pass
 
     def after_console_launch() -> None:
-        # Optionally lower the app only if currently windowed
-        from preferences import get_preference  # local import to avoid cycles at top
-        if get_preference(root, "console_minimize_app", "false") == "true":
-            if getattr(root, "_window_mode", "windowed") == "windowed":
-                try:
-                    root.lower()
-                except Exception:
-                    pass
+        # Consoles open in their own windows; no additional app behavior required.
+        return
 
     root.on_console_launch = on_console_launch  # type: ignore[attr-defined]
     root.on_console_exit = on_console_exit  # type: ignore[attr-defined]
@@ -2315,7 +2005,7 @@ def fetch_dashboard_data(root: tk.Tk, *, mode: str = "auto", force: bool = False
     if not account:
         return
 
-    proxmox = account.get("proxmox", {})
+    proxmox = get_active_proxmox_config(account) or {}
     host = proxmox.get("host")
     username = proxmox.get("username")
     password = proxmox.get("password")
@@ -2538,7 +2228,23 @@ def setup_menu(root: tk.Tk) -> None:
 
 def main() -> None:
     root = create_root_window()
-    store = AccountStore()
+    
+    # Try to load custom config directory from default location
+    default_config = Path.home() / ".config" / "Proxmox-LDC"
+    custom_config_dir = None
+    pref_file = default_config / "preferences.json"
+    if pref_file.exists():
+        try:
+            import json
+            with pref_file.open("r", encoding="utf-8") as f:
+                prefs = json.load(f)
+                custom_dir = prefs.get("config_dir")
+                if custom_dir:
+                    custom_config_dir = Path(custom_dir)
+        except Exception:
+            pass
+    
+    store = AccountStore(custom_config_dir)
     root.account_store = store  # type: ignore[attr-defined]
     setup_menu(root)
 

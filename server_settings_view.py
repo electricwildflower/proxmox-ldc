@@ -10,6 +10,51 @@ from trust import (
 )
 
 
+def _get_active_proxmox_config(account: dict | None) -> dict | None:
+    """Get the active Proxmox server configuration from account."""
+    if not account:
+        return None
+    
+    # New format: multiple servers
+    if "proxmox_servers" in account:
+        servers = account.get("proxmox_servers", [])
+        active_index = account.get("active_server_index", 0)
+        if servers and 0 <= active_index < len(servers):
+            return servers[active_index]
+        elif servers:
+            return servers[0]
+        return None
+    
+    # Old format: single proxmox config (backward compatibility)
+    if "proxmox" in account:
+        return account["proxmox"]
+    
+    return None
+
+
+def _get_active_server_index(account: dict) -> int:
+    """Get the index of the active server."""
+    if "proxmox_servers" in account:
+        return account.get("active_server_index", 0)
+    return 0  # Old format, treat as index 0
+
+
+def _get_all_proxmox_servers(account: dict | None) -> list[dict]:
+    """Get all Proxmox server configurations from account."""
+    if not account:
+        return []
+    
+    # New format: multiple servers
+    if "proxmox_servers" in account:
+        return account.get("proxmox_servers", [])
+    
+    # Old format: single proxmox config (convert to list for compatibility)
+    if "proxmox" in account:
+        return [account["proxmox"]]
+    
+    return []
+
+
 def build_view(parent: tk.Widget) -> tk.Frame:
     root = parent.winfo_toplevel()
     frame = tk.Frame(parent, bg=PROXMOX_DARK)
@@ -32,8 +77,8 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         justify=tk.LEFT,
         wraplength=760,
     )
-    subtitle.pack(anchor=tk.W, padx=40, pady=(0, 20))
-
+    subtitle.pack(anchor=tk.W, padx=40, pady=(0, 10))
+    
     app_state = getattr(root, "app_state", None)
     account = app_state.get("account") if isinstance(app_state, dict) else None
     if not account:
@@ -48,13 +93,87 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         ).pack(anchor=tk.W, padx=40, pady=(10, 0))
         return frame
 
-    proxmox = account.setdefault("proxmox", {})
+    # Server selector (if multiple servers exist)
+    servers = _get_all_proxmox_servers(account)
+    selected_server_index = [0]  # Use list to allow modification in nested functions
+    
+    # Get the selected server config
+    def get_selected_server_config() -> dict:
+        if len(servers) > 0 and 0 <= selected_server_index[0] < len(servers):
+            return servers[selected_server_index[0]]
+        return _get_active_proxmox_config(account) or {}
+    
+    # Initialize with active server
+    active_index = account.get("active_server_index", 0) if account else 0
+    if 0 <= active_index < len(servers):
+        selected_server_index[0] = active_index
+    
+    # Initialize form variables first
+    proxmox = get_selected_server_config()
     host_var = tk.StringVar(value=proxmox.get("host", ""))
     user_var = tk.StringVar(value=proxmox.get("username", ""))
     password_var = tk.StringVar(value=proxmox.get("password", ""))
     verify_var = tk.BooleanVar(value=bool(proxmox.get("verify_ssl", False)))
     status_var = tk.StringVar(value="")
     fingerprint_var = tk.StringVar(value=proxmox.get("trusted_cert_fingerprint", ""))
+    
+    if len(servers) > 1:
+        server_selector_frame = tk.Frame(frame, bg=PROXMOX_DARK)
+        server_selector_frame.pack(fill=tk.X, padx=40, pady=(0, 20))
+        
+        tk.Label(
+            server_selector_frame,
+            text="Select Server:",
+            font=("Segoe UI", 11, "bold"),
+            fg=PROXMOX_LIGHT,
+            bg=PROXMOX_DARK,
+        ).pack(side=tk.LEFT, padx=(0, 10))
+        
+        server_var = tk.StringVar()
+        if 0 <= selected_server_index[0] < len(servers):
+            server_name = servers[selected_server_index[0]].get("name") or servers[selected_server_index[0]].get("host", "Unknown")
+            server_var.set(server_name)
+        
+        # Define selection handler
+        def on_server_selected(selected_name: str) -> None:
+            for idx, server in enumerate(servers):
+                server_name = server.get("name") or server.get("host", "Unknown")
+                if server_name == selected_name:
+                    selected_server_index[0] = idx
+                    # Update form fields
+                    proxmox_cfg = get_selected_server_config()
+                    host_var.set(proxmox_cfg.get("host", ""))
+                    user_var.set(proxmox_cfg.get("username", ""))
+                    password_var.set(proxmox_cfg.get("password", ""))
+                    verify_var.set(bool(proxmox_cfg.get("verify_ssl", False)))
+                    fingerprint_var.set(proxmox_cfg.get("trusted_cert_fingerprint", ""))
+                    status_var.set("")
+                    break
+        
+        server_menu = tk.OptionMenu(
+            server_selector_frame,
+            server_var,
+            *[s.get("name") or s.get("host", "Unknown") for s in servers],
+            command=on_server_selected,
+        )
+        server_menu.config(
+            font=("Segoe UI", 11),
+            bg=PROXMOX_MEDIUM,
+            fg=PROXMOX_LIGHT,
+            activebackground=PROXMOX_ORANGE,
+            activeforeground="white",
+            highlightthickness=0,
+            bd=0,
+            relief="flat",
+        )
+        server_menu["menu"].config(
+            font=("Segoe UI", 11),
+            bg=PROXMOX_MEDIUM,
+            fg=PROXMOX_LIGHT,
+            activebackground=PROXMOX_ORANGE,
+            activeforeground="white",
+        )
+        server_menu.pack(side=tk.LEFT)
 
     store = getattr(root, "account_store", None)
 
@@ -129,14 +248,31 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         if not prompt_trust_dialog(frame, normalized_host, fingerprint):
             status_var.set("Trust cancelled.")
             return
-        cert_path = store.save_trusted_cert(account["username"], pem_cert)
-        proxmox["host"] = normalized_host
-        proxmox["trusted_cert"] = cert_path
-        proxmox["trusted_cert_fingerprint"] = fingerprint
-        proxmox["verify_ssl"] = True
+        username = account.get("username", "default")
+        server_idx = selected_server_index[0]
+        cert_path = store.save_trusted_cert(f"{username}_server_{server_idx}", pem_cert)
+        
+        # Get current server config
+        current_proxmox = get_selected_server_config()
+        current_proxmox["host"] = normalized_host
+        current_proxmox["trusted_cert"] = cert_path
+        current_proxmox["trusted_cert_fingerprint"] = fingerprint
+        current_proxmox["verify_ssl"] = True
+        
+        # Update the selected server in account
+        if "proxmox_servers" in account:
+            servers_list = account.get("proxmox_servers", [])
+            if 0 <= server_idx < len(servers_list):
+                servers_list[server_idx] = current_proxmox
+        else:
+            # Old format
+            account["proxmox"] = current_proxmox
+        
+        # Update form fields
         host_var.set(normalized_host)
         verify_var.set(True)
         fingerprint_var.set(fingerprint)
+        
         store.save_account(account)
         status_var.set("Server certificate trusted.")
 
@@ -157,7 +293,8 @@ def build_view(parent: tk.Widget) -> tk.Frame:
     ).pack(side=tk.LEFT)
 
     def view_trusted_cert() -> None:
-        pem_path = proxmox.get("trusted_cert")
+        current_proxmox = get_selected_server_config()
+        pem_path = current_proxmox.get("trusted_cert")
         if not pem_path:
             messagebox.showinfo("No certificate", "No trusted certificate is configured.", parent=root)
             return
@@ -167,10 +304,21 @@ def build_view(parent: tk.Widget) -> tk.Frame:
             messagebox.showerror("Unable to show certificate", str(exc), parent=root)
 
     def clear_trust() -> None:
-        proxmox.pop("trusted_cert", None)
-        proxmox.pop("trusted_cert_fingerprint", None)
+        current_proxmox = get_selected_server_config()
+        current_proxmox.pop("trusted_cert", None)
+        current_proxmox.pop("trusted_cert_fingerprint", None)
         fingerprint_var.set("")
         verify_var.set(False)
+        
+        # Update the selected server in account
+        if "proxmox_servers" in account:
+            servers_list = account.get("proxmox_servers", [])
+            server_idx = selected_server_index[0]
+            if 0 <= server_idx < len(servers_list):
+                servers_list[server_idx] = current_proxmox
+        else:
+            account["proxmox"] = current_proxmox
+        
         if store:
             store.save_account(account)
         status_var.set("Trusted certificate removed.")
@@ -235,13 +383,15 @@ def build_view(parent: tk.Widget) -> tk.Frame:
             return
         host_var.set(normalized_host)
 
-        host_changed = normalized_host != proxmox.get("host")
+        # Get current server config
+        current_proxmox = get_selected_server_config()
+        host_changed = normalized_host != current_proxmox.get("host")
         if host_changed:
-            proxmox.pop("trusted_cert", None)
-            proxmox.pop("trusted_cert_fingerprint", None)
+            current_proxmox.pop("trusted_cert", None)
+            current_proxmox.pop("trusted_cert_fingerprint", None)
             fingerprint_var.set("")
 
-        if verify_var.get() and not proxmox.get("trusted_cert"):
+        if verify_var.get() and not current_proxmox.get("trusted_cert"):
             messagebox.showerror(
                 "Trust required",
                 "Please trust the server certificate before enabling verification.",
@@ -249,7 +399,7 @@ def build_view(parent: tk.Widget) -> tk.Frame:
             )
             return
 
-        proxmox.update(
+        current_proxmox.update(
             {
                 "host": normalized_host,
                 "username": username,
@@ -257,7 +407,17 @@ def build_view(parent: tk.Widget) -> tk.Frame:
                 "verify_ssl": bool(verify_var.get()),
             }
         )
-        account["proxmox"] = proxmox
+        
+        # Update the selected server in account
+        if "proxmox_servers" in account:
+            servers_list = account.get("proxmox_servers", [])
+            server_idx = selected_server_index[0]
+            if 0 <= server_idx < len(servers_list):
+                servers_list[server_idx] = current_proxmox
+        else:
+            # Old format
+            account["proxmox"] = current_proxmox
+            
         if isinstance(app_state, dict):
             app_state["account"] = account
             app_state["dashboard_data"] = None
