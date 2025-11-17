@@ -117,65 +117,379 @@ def build_view(parent: tk.Widget) -> tk.Frame:
     status_var = tk.StringVar(value="")
     fingerprint_var = tk.StringVar(value=proxmox.get("trusted_cert_fingerprint", ""))
     
-    if len(servers) > 1:
-        server_selector_frame = tk.Frame(frame, bg=PROXMOX_DARK)
-        server_selector_frame.pack(fill=tk.X, padx=40, pady=(0, 20))
+    # Server selector frame (always show if we have servers, or show add button)
+    server_selector_frame = tk.Frame(frame, bg=PROXMOX_DARK)
+    server_selector_frame.pack(fill=tk.X, padx=40, pady=(0, 20))
+    
+    server_var = tk.StringVar()
+    server_menu = None
+    
+    def update_server_selector() -> None:
+        """Update the server selector dropdown with current server list."""
+        nonlocal server_menu, servers
+        # Clear existing widgets
+        for widget in server_selector_frame.winfo_children():
+            widget.destroy()
         
-        tk.Label(
+        servers = _get_all_proxmox_servers(account)
+        
+        if len(servers) > 0:
+            tk.Label(
+                server_selector_frame,
+                text="Select Server:",
+                font=("Segoe UI", 11, "bold"),
+                fg=PROXMOX_LIGHT,
+                bg=PROXMOX_DARK,
+            ).pack(side=tk.LEFT, padx=(0, 10))
+            
+            # Ensure selected index is valid
+            if selected_server_index[0] >= len(servers):
+                selected_server_index[0] = 0
+            
+            if 0 <= selected_server_index[0] < len(servers):
+                server_name = servers[selected_server_index[0]].get("name") or servers[selected_server_index[0]].get("host", "Unknown")
+                server_var.set(server_name)
+            
+            # Define selection handler
+            def on_server_selected(selected_name: str) -> None:
+                for idx, server in enumerate(servers):
+                    server_name = server.get("name") or server.get("host", "Unknown")
+                    if server_name == selected_name:
+                        selected_server_index[0] = idx
+                        # Update form fields
+                        proxmox_cfg = get_selected_server_config()
+                        host_var.set(proxmox_cfg.get("host", ""))
+                        user_var.set(proxmox_cfg.get("username", ""))
+                        password_var.set(proxmox_cfg.get("password", ""))
+                        verify_var.set(bool(proxmox_cfg.get("verify_ssl", False)))
+                        fingerprint_var.set(proxmox_cfg.get("trusted_cert_fingerprint", ""))
+                        status_var.set("")
+                        break
+            
+            server_menu = tk.OptionMenu(
+                server_selector_frame,
+                server_var,
+                *[s.get("name") or s.get("host", "Unknown") for s in servers],
+                command=on_server_selected,
+            )
+            server_menu.config(
+                font=("Segoe UI", 11),
+                bg=PROXMOX_MEDIUM,
+                fg=PROXMOX_LIGHT,
+                activebackground=PROXMOX_ORANGE,
+                activeforeground="white",
+                highlightthickness=0,
+                bd=0,
+                relief="flat",
+            )
+            server_menu["menu"].config(
+                font=("Segoe UI", 11),
+                bg=PROXMOX_MEDIUM,
+                fg=PROXMOX_LIGHT,
+                activebackground=PROXMOX_ORANGE,
+                activeforeground="white",
+            )
+            server_menu.pack(side=tk.LEFT, padx=(0, 10))
+        
+        # Always show "Add Server" button
+        tk.Button(
             server_selector_frame,
-            text="Select Server:",
-            font=("Segoe UI", 11, "bold"),
-            fg=PROXMOX_LIGHT,
-            bg=PROXMOX_DARK,
+            text="+ Add Server",
+            command=lambda: add_new_server(),
+            font=("Segoe UI", 10, "bold"),
+            bg="#4caf50",
+            fg="white",
+            activebackground="#45a049",
+            activeforeground="white",
+            bd=0,
+            padx=12,
+            pady=6,
         ).pack(side=tk.LEFT, padx=(0, 10))
         
-        server_var = tk.StringVar()
-        if 0 <= selected_server_index[0] < len(servers):
-            server_name = servers[selected_server_index[0]].get("name") or servers[selected_server_index[0]].get("host", "Unknown")
-            server_var.set(server_name)
-        
-        # Define selection handler
-        def on_server_selected(selected_name: str) -> None:
-            for idx, server in enumerate(servers):
-                server_name = server.get("name") or server.get("host", "Unknown")
-                if server_name == selected_name:
-                    selected_server_index[0] = idx
-                    # Update form fields
-                    proxmox_cfg = get_selected_server_config()
-                    host_var.set(proxmox_cfg.get("host", ""))
-                    user_var.set(proxmox_cfg.get("username", ""))
-                    password_var.set(proxmox_cfg.get("password", ""))
-                    verify_var.set(bool(proxmox_cfg.get("verify_ssl", False)))
-                    fingerprint_var.set(proxmox_cfg.get("trusted_cert_fingerprint", ""))
-                    status_var.set("")
-                    break
-        
-        server_menu = tk.OptionMenu(
-            server_selector_frame,
-            server_var,
-            *[s.get("name") or s.get("host", "Unknown") for s in servers],
-            command=on_server_selected,
-        )
-        server_menu.config(
-            font=("Segoe UI", 11),
-            bg=PROXMOX_MEDIUM,
-            fg=PROXMOX_LIGHT,
-            activebackground=PROXMOX_ORANGE,
-            activeforeground="white",
-            highlightthickness=0,
-            bd=0,
-            relief="flat",
-        )
-        server_menu["menu"].config(
-            font=("Segoe UI", 11),
-            bg=PROXMOX_MEDIUM,
-            fg=PROXMOX_LIGHT,
-            activebackground=PROXMOX_ORANGE,
-            activeforeground="white",
-        )
-        server_menu.pack(side=tk.LEFT)
+        # Add "Remove Server" button (only if more than one server)
+        if len(servers) > 1:
+            tk.Button(
+                server_selector_frame,
+                text="Remove Server",
+                command=lambda: remove_current_server(),
+                font=("Segoe UI", 10),
+                bg="#f44336",
+                fg="white",
+                activebackground="#da190b",
+                activeforeground="white",
+                bd=0,
+                padx=12,
+                pady=6,
+            ).pack(side=tk.LEFT)
+    
+    # Initialize server selector
+    update_server_selector()
 
     store = getattr(root, "account_store", None)
+    
+    def add_new_server() -> None:
+        """Open a dialog to add a new server."""
+        if store is None:
+            messagebox.showerror("Unavailable", "Account store is not available.", parent=root)
+            return
+        
+        dialog = tk.Toplevel(root)
+        dialog.title("Add New Server")
+        dialog.configure(bg=PROXMOX_DARK)
+        dialog.transient(root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+        
+        # Center the dialog
+        root.update_idletasks()
+        x = root.winfo_rootx() + (root.winfo_width() // 2) - 300
+        y = root.winfo_rooty() + (root.winfo_height() // 2) - 200
+        dialog.geometry(f"600x400+{x}+{y}")
+        
+        tk.Label(
+            dialog,
+            text="Add New Server",
+            font=("Segoe UI", 16, "bold"),
+            fg=PROXMOX_ORANGE,
+            bg=PROXMOX_DARK,
+        ).pack(anchor=tk.W, padx=24, pady=(20, 10))
+        
+        tk.Label(
+            dialog,
+            text="Enter the connection details for the new Proxmox server.",
+            font=("Segoe UI", 11),
+            fg=PROXMOX_LIGHT,
+            bg=PROXMOX_DARK,
+            wraplength=550,
+            justify=tk.LEFT,
+        ).pack(anchor=tk.W, padx=24, pady=(0, 20))
+        
+        form_frame = tk.Frame(dialog, bg=PROXMOX_DARK)
+        form_frame.pack(fill=tk.BOTH, expand=True, padx=24, pady=(0, 20))
+        
+        new_host_var = tk.StringVar()
+        new_user_var = tk.StringVar()
+        new_password_var = tk.StringVar()
+        
+        def add_form_row(label_text: str, variable: tk.StringVar, show: str | None = None) -> None:
+            row = tk.Frame(form_frame, bg=PROXMOX_DARK)
+            row.pack(fill=tk.X, pady=8)
+            tk.Label(
+                row,
+                text=label_text,
+                font=("Segoe UI", 11, "bold"),
+                fg=PROXMOX_LIGHT,
+                bg=PROXMOX_DARK,
+                width=20,
+                anchor="w",
+            ).pack(side=tk.LEFT, padx=(0, 10))
+            entry = tk.Entry(
+                row,
+                textvariable=variable,
+                show=show or "",
+                font=("Segoe UI", 11),
+                bg="#1f242b",
+                fg=PROXMOX_LIGHT,
+                insertbackground=PROXMOX_LIGHT,
+                bd=0,
+                relief="flat",
+                highlightthickness=1,
+                highlightbackground="#363c45",
+                highlightcolor=PROXMOX_ORANGE,
+            )
+            entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        add_form_row("Server URL", new_host_var)
+        add_form_row("Username", new_user_var)
+        add_form_row("Password", new_password_var, show="*")
+        
+        status_dialog_var = tk.StringVar(value="")
+        status_label = tk.Label(
+            dialog,
+            textvariable=status_dialog_var,
+            font=("Segoe UI", 10),
+            fg="#7ddc88",
+            bg=PROXMOX_DARK,
+        )
+        status_label.pack(anchor=tk.W, padx=24, pady=(0, 10))
+        
+        def save_new_server() -> None:
+            host = new_host_var.get().strip()
+            username = new_user_var.get().strip()
+            password = new_password_var.get()
+            
+            if not host or not username or not password:
+                status_dialog_var.set("Please fill in all fields.")
+                return
+            
+            try:
+                normalized_host, pem_cert, fingerprint = fetch_server_certificate(host)
+            except Exception as exc:
+                status_dialog_var.set(f"Certificate error: {exc}")
+                return
+            
+            if not prompt_trust_dialog(dialog, normalized_host, fingerprint):
+                status_dialog_var.set("You must trust the server certificate to continue.")
+                return
+            
+            # Save certificate
+            account_username = account.get("username", "default")
+            new_server_idx = len(servers)
+            cert_path = store.save_trusted_cert(f"{account_username}_server_{new_server_idx}", pem_cert)
+            
+            # Create new server config
+            new_server = {
+                "host": normalized_host,
+                "username": username,
+                "password": password,
+                "verify_ssl": True,
+                "trusted_cert": cert_path,
+                "trusted_cert_fingerprint": fingerprint,
+                "name": normalized_host,  # Default name
+            }
+            
+            # Add to account
+            if "proxmox_servers" not in account:
+                # Convert old format to new format
+                if "proxmox" in account:
+                    account["proxmox_servers"] = [account["proxmox"]]
+                    account["active_server_index"] = 0
+                else:
+                    account["proxmox_servers"] = []
+            
+            account["proxmox_servers"].append(new_server)
+            store.save_account(account)
+            
+            # Update app state
+            if isinstance(app_state, dict):
+                app_state["account"] = account
+                app_state["dashboard_data"] = None
+            
+            # Update UI
+            selected_server_index[0] = len(account["proxmox_servers"]) - 1
+            update_server_selector()
+            
+            # Update form fields to show new server
+            proxmox_cfg = get_selected_server_config()
+            host_var.set(proxmox_cfg.get("host", ""))
+            user_var.set(proxmox_cfg.get("username", ""))
+            password_var.set(proxmox_cfg.get("password", ""))
+            verify_var.set(bool(proxmox_cfg.get("verify_ssl", False)))
+            fingerprint_var.set(proxmox_cfg.get("trusted_cert_fingerprint", ""))
+            
+            status_var.set("New server added successfully.")
+            dialog.destroy()
+        
+        buttons_frame = tk.Frame(dialog, bg=PROXMOX_DARK)
+        buttons_frame.pack(fill=tk.X, padx=24, pady=(0, 20))
+        
+        tk.Button(
+            buttons_frame,
+            text="Cancel",
+            command=dialog.destroy,
+            font=("Segoe UI", 11),
+            bg="#2f3640",
+            fg=PROXMOX_LIGHT,
+            activebackground="#3a414d",
+            activeforeground=PROXMOX_LIGHT,
+            bd=0,
+            padx=16,
+            pady=8,
+        ).pack(side=tk.RIGHT, padx=(10, 0))
+        
+        tk.Button(
+            buttons_frame,
+            text="Add Server",
+            command=save_new_server,
+            font=("Segoe UI", 11, "bold"),
+            bg=PROXMOX_ORANGE,
+            fg="white",
+            activebackground="#ff8126",
+            activeforeground="white",
+            bd=0,
+            padx=16,
+            pady=8,
+        ).pack(side=tk.RIGHT)
+    
+    def remove_current_server() -> None:
+        """Remove the currently selected server."""
+        if store is None:
+            messagebox.showerror("Unavailable", "Account store is not available.", parent=root)
+            return
+        
+        if len(servers) <= 1:
+            messagebox.showwarning(
+                "Cannot remove",
+                "You must have at least one server configured. Cannot remove the last server.",
+                parent=root,
+            )
+            return
+        
+        current_server = get_selected_server_config()
+        server_name = current_server.get("name") or current_server.get("host", "Unknown")
+        
+        # Confirm removal
+        if not messagebox.askyesno(
+            "Confirm Removal",
+            f"Are you sure you want to remove server '{server_name}'?\n\nThis action cannot be undone.",
+            parent=root,
+        ):
+            return
+        
+        # Remove server from account
+        if "proxmox_servers" in account:
+            servers_list = account.get("proxmox_servers", [])
+            idx_to_remove = selected_server_index[0]
+            
+            if 0 <= idx_to_remove < len(servers_list):
+                servers_list.pop(idx_to_remove)
+                
+                # Adjust active server index if needed
+                active_idx = account.get("active_server_index", 0)
+                if idx_to_remove < active_idx:
+                    # Removed server was before active, adjust index
+                    account["active_server_index"] = active_idx - 1
+                elif idx_to_remove == active_idx:
+                    # Removed the active server, switch to first server
+                    if len(servers_list) > 0:
+                        account["active_server_index"] = 0
+                    else:
+                        account.pop("active_server_index", None)
+                elif active_idx >= len(servers_list):
+                    # Active index is now out of bounds, set to last server
+                    account["active_server_index"] = len(servers_list) - 1
+                
+                # Update selected index
+                if selected_server_index[0] >= len(servers_list):
+                    selected_server_index[0] = len(servers_list) - 1
+                
+                store.save_account(account)
+                
+                # Update app state
+                if isinstance(app_state, dict):
+                    app_state["account"] = account
+                    app_state["dashboard_data"] = None
+                
+                # Update UI
+                update_server_selector()
+                
+                # Update form fields to show the now-selected server
+                proxmox_cfg = get_selected_server_config()
+                host_var.set(proxmox_cfg.get("host", ""))
+                user_var.set(proxmox_cfg.get("username", ""))
+                password_var.set(proxmox_cfg.get("password", ""))
+                verify_var.set(bool(proxmox_cfg.get("verify_ssl", False)))
+                fingerprint_var.set(proxmox_cfg.get("trusted_cert_fingerprint", ""))
+                
+                status_var.set(f"Server '{server_name}' removed.")
+            else:
+                messagebox.showerror("Error", "Invalid server index.", parent=root)
+        else:
+            messagebox.showwarning(
+                "Cannot remove",
+                "Cannot remove server from old format account. Please use the setup wizard.",
+                parent=root,
+            )
 
     form = tk.Frame(frame, bg=PROXMOX_MEDIUM)
     form.pack(fill=tk.X, padx=40, pady=(0, 20))

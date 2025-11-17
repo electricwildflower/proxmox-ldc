@@ -263,6 +263,26 @@ class ProxmoxClient:
             )
         return networks
 
+    def get_storage_content(self, node: str, storage: str) -> list[dict[str, Any]]:
+        """Get content of a storage (ISOs, disk images, etc.)."""
+        return self._get(f"nodes/{node}/storage/{storage}/content").get("data", [])
+
+    def get_next_vmid(self) -> int:
+        """Get the next available VM ID."""
+        result = self._get("cluster/nextid")
+        vmid = result.get("data")
+        if isinstance(vmid, (int, str)):
+            try:
+                return int(vmid)
+            except ValueError:
+                pass
+        raise ProxmoxAPIError("Unable to get next VM ID from Proxmox API.")
+
+    def create_vm(self, node: str, vmid: int, config: dict[str, Any]) -> dict[str, Any]:
+        """Create a new VM with the given configuration."""
+        data = {"vmid": vmid, **config}
+        return self._request("POST", f"nodes/{node}/qemu", data=data).get("data", {})
+
     def fetch_summary(self) -> ProxmoxSummary:
         version = self.get_version()
         nodes = self.get_nodes()

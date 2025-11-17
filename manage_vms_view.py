@@ -11,6 +11,28 @@ from theme import PROXMOX_DARK, PROXMOX_LIGHT, PROXMOX_MEDIUM, PROXMOX_ORANGE
 from vm_console_launcher import launch_vm_console
 
 
+def _get_active_proxmox_config(account: dict | None) -> dict | None:
+    """Get the active Proxmox server configuration from account."""
+    if not account:
+        return None
+    
+    # New format: multiple servers
+    if "proxmox_servers" in account:
+        servers = account.get("proxmox_servers", [])
+        active_index = account.get("active_server_index", 0)
+        if servers and 0 <= active_index < len(servers):
+            return servers[active_index]
+        elif servers:
+            return servers[0]
+        return None
+    
+    # Old format: single proxmox config (backward compatibility)
+    if "proxmox" in account:
+        return account["proxmox"]
+    
+    return None
+
+
 def build_view(parent: tk.Widget) -> tk.Frame:
     root = parent.winfo_toplevel()
     frame = tk.Frame(parent, bg=PROXMOX_DARK)
@@ -309,8 +331,7 @@ def build_view(parent: tk.Widget) -> tk.Frame:
             messagebox.showerror("Unavailable", "Account or VM data is not ready yet.", parent=root)
             return
 
-        from main import get_active_proxmox_config
-        proxmox_cfg = get_active_proxmox_config(account) or {}
+        proxmox_cfg = _get_active_proxmox_config(account) or {}
         host = proxmox_cfg.get("host")
         username = proxmox_cfg.get("username")
         password = proxmox_cfg.get("password")
@@ -374,10 +395,14 @@ def build_view(parent: tk.Widget) -> tk.Frame:
 
             def finalize() -> None:
                 status_var.set(message)
+                # Wait a moment for the VM action to complete, then force refresh
+                # Some VMs take longer to start, so we'll do multiple refreshes
+                root.after(1000, lambda: refresh_data(force=True))
+                root.after(3000, lambda: refresh_data(force=True))  # Second refresh after 3 seconds
+                # Also trigger dashboard refresh for consistency
                 refresh_cb = getattr(root, "trigger_dashboard_refresh", None)
                 if callable(refresh_cb):
                     refresh_cb(mode="full", force=True)
-                root.after(1500, refresh_data)
 
             root.after(0, finalize)
 
@@ -472,9 +497,7 @@ def build_view(parent: tk.Widget) -> tk.Frame:
                 status_var.set(f"Starting {vm_name}...")
 
                 def start_vm_worker() -> None:
-                    from main import get_active_proxmox_config
-
-                    proxmox_cfg = get_active_proxmox_config(account) or {}
+                    proxmox_cfg = _get_active_proxmox_config(account) or {}
                     host = proxmox_cfg.get("host")
                     username = proxmox_cfg.get("username")
                     password = proxmox_cfg.get("password")
@@ -539,25 +562,87 @@ def build_view(parent: tk.Widget) -> tk.Frame:
 
     def refresh_data(force: bool = False) -> None:
         app_state = getattr(root, "app_state", None)
+        account = app_state.get("account") if isinstance(app_state, dict) else None
+        
+        if force and account:
+            # Force refresh: fetch data directly from Proxmox
+            status_var.set("Requesting latest VM data...")
+            
+            def fetch_worker() -> None:
+                proxmox_cfg = _get_active_proxmox_config(account) or {}
+                host = proxmox_cfg.get("host")
+                username = proxmox_cfg.get("username")
+                password = proxmox_cfg.get("password")
+                verify_ssl = proxmox_cfg.get("verify_ssl", False)
+                trusted_cert = proxmox_cfg.get("trusted_cert")
+                trusted_fp = proxmox_cfg.get("trusted_cert_fingerprint")
+                
+                if not all([host, username, password]):
+                    def show_error() -> None:
+                        status_var.set("Unable to connect: missing credentials.")
+                    root.after(0, show_error)
+                    return
+                
+                client: ProxmoxClient | None = None
+                try:
+                    from proxmox_client import ProxmoxSummary
+                    client = ProxmoxClient(
+                        host=host,
+                        username=username,
+                        password=password,
+                        verify_ssl=verify_ssl,
+                        trusted_cert=trusted_cert,
+                        trusted_fingerprint=trusted_fp,
+                    )
+                    summary = client.fetch_summary()
+                    
+                    def update_ui() -> None:
+                        vms = getattr(summary, "vms", None)
+                        if vms is None and isinstance(summary, dict):
+                            vms = summary.get("vms")
+                        
+                        data_holder["summary"] = summary
+                        data_holder["vms"] = list(vms or [])
+                        status_var.set(f"{len(data_holder['vms'])} virtual machines loaded.")
+                        render_vm_rows()
+                        
+                        # Also update dashboard data for consistency
+                        if isinstance(app_state, dict):
+                            if "dashboard_data" not in app_state:
+                                app_state["dashboard_data"] = {}
+                            app_state["dashboard_data"]["summary"] = summary
+                        
+                        dock_refresh = getattr(root, "refresh_dock_panel", None)
+                        if callable(dock_refresh):
+                            root.after_idle(dock_refresh)
+                    
+                    root.after(0, update_ui)
+                except ProxmoxAPIError as exc:
+                    def show_error() -> None:
+                        status_var.set(f"API error: {exc}")
+                    root.after(0, show_error)
+                except Exception as exc:
+                    def show_error() -> None:
+                        status_var.set(f"Error: {exc}")
+                    root.after(0, show_error)
+                finally:
+                    if client:
+                        client.close()
+            
+            threading.Thread(target=fetch_worker, daemon=True).start()
+            return
+        
+        # Non-force refresh: use cached dashboard data
         summary = None
         if isinstance(app_state, dict):
             dashboard_data = app_state.get("dashboard_data") or {}
             summary = dashboard_data.get("summary")
 
         if summary is None:
-            if force:
-                status_var.set("Requesting latest VM data...")
-                refresh_cb = getattr(root, "trigger_dashboard_refresh", None)
-                if callable(refresh_cb):
-                    refresh_cb(mode="full", force=True)
-                    root.after(1500, refresh_data)
-                else:
-                    status_var.set("Unable to trigger a dashboard refresh.")
-            else:
-                status_var.set("No VM data available. Use Refresh to load from Proxmox.")
-                data_holder["summary"] = None
-                data_holder["vms"] = []
-                render_vm_rows()
+            status_var.set("No VM data available. Use Refresh to load from Proxmox.")
+            data_holder["summary"] = None
+            data_holder["vms"] = []
+            render_vm_rows()
             return
 
         vms = getattr(summary, "vms", None)
