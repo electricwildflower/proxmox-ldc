@@ -9,7 +9,8 @@ An app for the linux desktop to interact with a Proxmox server. With Proxmox-LDC
 * Add & remove multiple machines
 * View stats for multiple machines
 * View a list of network adaptors, virtual machines & containers
-* Stop and start Virtual Machines
-* Open virtual machines in a console
+* Stop and start Virtual Machines & containers
+* Create new Virtual Machines & Containers
+* Open virtual machines in a console & containers in a shell
 * Connect to a servers shell for maintanance
-* Update & Upgrade a proxmox machine from the shell
+* Update & upgrade a proxmox machine from the shell
