@@ -117,6 +117,22 @@ class ProxmoxClient:
         try:
             response.raise_for_status()
         except requests.HTTPError as exc:
+            error_detail = ""
+            try:
+                payload = response.json()
+                if isinstance(payload, dict):
+                    errors = payload.get("errors")
+                    message = payload.get("message")
+                    if errors and isinstance(errors, dict):
+                        error_lines = [f"{key}: {val}" for key, val in errors.items()]
+                        error_detail = "; ".join(error_lines)
+                    elif message:
+                        error_detail = str(message)
+            except ValueError:
+                error_detail = response.text.strip()
+
+            if error_detail:
+                raise ProxmoxAPIError(f"API request failed: {exc}\nDetails: {error_detail}") from exc
             raise ProxmoxAPIError(f"API request failed: {exc}") from exc
         try:
             return response.json()
@@ -162,11 +178,25 @@ class ProxmoxClient:
     def get_node_storage(self, node: str) -> list[dict[str, Any]]:
         return self._get(f"nodes/{node}/storage").get("data", [])
 
+    def get_node_usb_devices(self, node: str) -> list[dict[str, Any]]:
+        """Get available USB devices on a node."""
+        return self._get(f"nodes/{node}/hardware/usb").get("data", [])
+
+    def get_node_pci_devices(self, node: str) -> list[dict[str, Any]]:
+        """Get available PCI devices on a node."""
+        return self._get(f"nodes/{node}/hardware/pci").get("data", [])
+
     def get_node_vms(self, node: str) -> list[dict[str, Any]]:
         return self._get(f"nodes/{node}/qemu").get("data", [])
 
     def get_vm_config(self, node: str, vmid: int | str) -> dict[str, Any]:
         return self._get(f"nodes/{node}/qemu/{vmid}/config").get("data", {})
+
+    def update_vm_config(
+        self, node: str, vmid: int | str, config: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Update VM configuration."""
+        return self._request("PUT", f"nodes/{node}/qemu/{vmid}/config", data=config).get("data", {})
 
     def start_vm(self, node: str, vmid: int | str) -> dict[str, Any]:
         return self._request("POST", f"nodes/{node}/qemu/{vmid}/status/start", data={}).get("data", {})
@@ -309,6 +339,53 @@ class ProxmoxClient:
         """Create a new VM with the given configuration."""
         data = {"vmid": vmid, **config}
         return self._request("POST", f"nodes/{node}/qemu", data=data).get("data", {})
+
+    def delete_vm(
+        self,
+        node: str,
+        vmid: int | str,
+        *,
+        purge: bool = True,
+        destroy_unreferenced_disks: bool = True,
+    ) -> dict[str, Any]:
+        """Delete a VM and optionally purge data."""
+        params = {
+            "purge": int(purge),
+            "destroy-unreferenced-disks": int(destroy_unreferenced_disks),
+        }
+        return self._request("DELETE", f"nodes/{node}/qemu/{vmid}", params=params).get("data", {})
+
+    def get_container_templates(self, node: str, storage: str) -> list[dict[str, Any]]:
+        """Get available container templates from a storage."""
+        try:
+            content = self.get_storage_content(node, storage)
+            return [
+                item
+                for item in content
+                if item.get("content") == "vztmpl" and item.get("volid")
+            ]
+        except Exception:
+            return []
+
+    def create_container(self, node: str, vmid: int, config: dict[str, Any]) -> dict[str, Any]:
+        """Create a new container (LXC) with the given configuration."""
+        data = {"vmid": vmid, **config}
+        return self._request("POST", f"nodes/{node}/lxc", data=data).get("data", {})
+
+    def delete_container(
+        self,
+        node: str,
+        vmid: int | str,
+        *,
+        purge: bool = True,
+        destroy_unreferenced_disks: bool = True,
+    ) -> dict[str, Any]:
+        """Delete a container and optionally purge data."""
+        params = {
+            "purge": int(purge),
+            "destroy-unreferenced-disks": int(destroy_unreferenced_disks),
+        }
+        return self._request("DELETE", f"nodes/{node}/lxc/{vmid}", params=params).get("data", {})
 
     def fetch_summary(self) -> ProxmoxSummary:
         version = self.get_version()

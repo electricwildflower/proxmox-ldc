@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 from typing import Any
 
 from preferences import get_preference, set_preference
@@ -699,6 +699,47 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         dialog.wait_window()
         return response["value"]
 
+    def styled_warning(title: str, message: str) -> None:
+        dialog = tk.Toplevel(root)
+        dialog.title(title)
+        dialog.configure(bg=PROXMOX_DARK)
+        dialog.transient(root)
+        dialog.grab_set()
+
+        tk.Label(
+            dialog,
+            text=title,
+            font=("Segoe UI", 14, "bold"),
+            fg=PROXMOX_ORANGE,
+            bg=PROXMOX_DARK,
+        ).pack(anchor=tk.W, padx=25, pady=(20, 6))
+
+        tk.Label(
+            dialog,
+            text=message,
+            font=("Segoe UI", 11),
+            fg=PROXMOX_LIGHT,
+            bg=PROXMOX_DARK,
+            wraplength=420,
+            justify=tk.LEFT,
+        ).pack(fill=tk.X, padx=25, pady=(0, 15))
+
+        tk.Button(
+            dialog,
+            text="Close",
+            command=dialog.destroy,
+            font=("Segoe UI", 10, "bold"),
+            bg=PROXMOX_ORANGE,
+            fg="white",
+            activebackground="#ff8126",
+            activeforeground="white",
+            bd=0,
+            padx=16,
+            pady=6,
+        ).pack(padx=25, pady=(0, 20))
+
+        dialog.wait_window()
+
     def filtered_vms() -> list[dict[str, Any]]:
         term = search_var.get().strip().lower()
         vms: list[dict[str, Any]] = list(data_holder.get("vms", []))
@@ -856,6 +897,90 @@ def build_view(parent: tk.Widget) -> tk.Frame:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def delete_vm(vm: dict[str, Any]) -> None:
+        status = str(vm.get("status", "")).lower()
+        name = vm.get("name") or f"VM {vm.get('vmid')}"
+        vmid = vm.get("vmid")
+        if vmid is None:
+            messagebox.showerror("Unknown VM", "Unable to determine the VM ID.", parent=root)
+            return
+
+        if status == "running":
+            styled_warning(
+                "VM is running",
+                f"The VM '{name}' is currently running.\n\nPlease stop it before attempting to delete.",
+            )
+            return
+
+        if not styled_confirm(
+            "Delete VM",
+            f"Are you sure you want to delete '{name}' (VMID {vmid})?\n\n"
+            "This will permanently remove the VM and all associated disks. This action cannot be undone.",
+        ):
+            return
+
+        account = getattr(root, "app_state", {}).get("account") if hasattr(root, "app_state") else None
+        summary = data_holder.get("summary")
+        if not account or not summary:
+            messagebox.showerror("Unavailable", "Account or VM data is not ready yet.", parent=root)
+            return
+
+        proxmox_cfg = _get_active_proxmox_config(account) or {}
+        host = proxmox_cfg.get("host")
+        username = proxmox_cfg.get("username")
+        password = proxmox_cfg.get("password")
+        verify_ssl = proxmox_cfg.get("verify_ssl", False)
+        trusted_cert = proxmox_cfg.get("trusted_cert")
+        trusted_fp = proxmox_cfg.get("trusted_cert_fingerprint")
+        node_name = getattr(summary, "node_name", None) or vm.get("node")
+
+        if not all([host, username, password, node_name]):
+            messagebox.showerror(
+                "Missing information",
+                "Incomplete connection details or node information.",
+                parent=root,
+            )
+            return
+
+        status_var.set(f"Deleting {name}...")
+
+        def worker() -> None:
+            client: ProxmoxClient | None = None
+            message = ""
+            try:
+                client = ProxmoxClient(
+                    host=host,
+                    username=username,
+                    password=password,
+                    verify_ssl=verify_ssl,
+                    trusted_cert=trusted_cert,
+                    trusted_fingerprint=trusted_fp,
+                )
+                delete_result = client.delete_vm(node_name, vmid)
+                task_id = delete_result.get("upid") if isinstance(delete_result, dict) else None
+                message = f"{name} is being deleted."
+            except ProxmoxAPIError as exc:
+                message = f"Delete failed: {exc}"
+            except Exception as exc:  # pragma: no cover
+                message = f"Unexpected error: {exc}"
+            finally:
+                if client:
+                    client.close()
+
+            def finalize() -> None:
+                status_var.set(message)
+                # Some Proxmox deletions are asynchronous; refresh multiple times
+                root.after(1500, lambda: refresh_data(force=True))
+                root.after(4000, lambda: refresh_data(force=True))
+                # Also refresh dashboard
+                refresh_cb = getattr(root, "trigger_dashboard_refresh", None)
+                if callable(refresh_cb):
+                    refresh_cb(mode="full", force=True)
+
+            root.after(0, finalize)
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def render_vm_row(vm: dict[str, Any]) -> None:
         row = tk.Frame(rows_container, bg=PROXMOX_MEDIUM, highlightthickness=1, highlightbackground="#3c434e")
         row.pack(fill=tk.X, pady=6)
@@ -918,6 +1043,7 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         action_button("Start", lambda vm=vm: perform_vm_action("start", vm), not running)
         action_button("Stop", lambda vm=vm: perform_vm_action("stop", vm), running)
         action_button("Restart", lambda vm=vm: perform_vm_action("restart", vm), running)
+        action_button("Delete", lambda vm=vm: delete_vm(vm), True)
 
         def open_console(vm_obj: dict[str, Any]) -> None:
             """Launch the VM console in a separate viewer window."""
@@ -1027,6 +1153,31 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         
         action_button("Open Console", lambda vm=vm: open_console(vm), True)
         action_button("View Info", lambda vm=vm: view_vm_details(vm), True)
+        
+        def open_device_management(vm_obj: dict[str, Any]) -> None:
+            """Open device management window for a VM."""
+            from vm_device_management import show_device_management
+            account = getattr(root, "app_state", {}).get("account") if hasattr(root, "app_state") else None
+            summary_obj = data_holder.get("summary")
+            if not account or not summary_obj:
+                messagebox.showerror("Unavailable", "Account or VM data is not ready yet.", parent=root)
+                return
+            
+            vmid = vm_obj.get("vmid")
+            if vmid is None:
+                messagebox.showerror("Unknown VM", "Unable to determine the VM ID.", parent=root)
+                return
+            
+            vm_name = vm_obj.get("name") or f"VM {vmid}"
+            node_name = getattr(summary_obj, "node_name", None) or vm_obj.get("node")
+            
+            if not node_name:
+                messagebox.showerror("Unknown Node", "Unable to determine the node name.", parent=root)
+                return
+            
+            show_device_management(root, account, node_name, vmid, vm_name, rows_container, render_vm_rows)
+        
+        action_button("Device Management", lambda vm=vm: open_device_management(vm), True)
 
     def refresh_data(force: bool = False) -> None:
         app_state = getattr(root, "app_state", None)

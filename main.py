@@ -10,6 +10,8 @@ from typing import Any
 from add_container_view import build_view as build_add_container_view
 from add_vm_view import build_view as build_add_vm_view
 from app_settings_view import build_view as build_app_settings_view
+from create_disk_view import build_view as build_create_disk_view
+from list_disks_view import build_view as build_list_disks_view
 from manage_containers_view import build_view as build_manage_containers_view
 from manage_vms_view import build_view as build_manage_vms_view
 from preferences import get_preference, get_preferences, set_preference
@@ -126,20 +128,156 @@ def set_active_server(account: dict, server_index: int) -> None:
             account["active_server_index"] = server_index
 
 
+def _styled_warning(parent: tk.Widget, title: str, message: str) -> None:
+    """Show a styled warning dialog matching the app theme."""
+    dialog = tk.Toplevel(parent)
+    dialog.title(title)
+    dialog.configure(bg=PROXMOX_DARK)
+    dialog.transient(parent.winfo_toplevel())
+    dialog.grab_set()
+    dialog.resizable(False, False)
+    
+    # Center the dialog
+    parent.update_idletasks()
+    x = parent.winfo_rootx() + (parent.winfo_width() // 2) - 250
+    y = parent.winfo_rooty() + (parent.winfo_height() // 2) - 100
+    dialog.geometry(f"500x200+{x}+{y}")
+    
+    tk.Label(
+        dialog,
+        text=title,
+        font=("Segoe UI", 14, "bold"),
+        fg=PROXMOX_ORANGE,
+        bg=PROXMOX_DARK,
+        anchor="w",
+    ).pack(fill=tk.X, padx=24, pady=(20, 6))
+    
+    tk.Label(
+        dialog,
+        text=message,
+        font=("Segoe UI", 11),
+        fg=PROXMOX_LIGHT,
+        bg=PROXMOX_DARK,
+        wraplength=450,
+        justify=tk.LEFT,
+    ).pack(fill=tk.X, padx=24, pady=(0, 16))
+    
+    actions = tk.Frame(dialog, bg=PROXMOX_DARK)
+    actions.pack(fill=tk.X, padx=24, pady=(0, 20))
+    
+    tk.Button(
+        actions,
+        text="Close",
+        command=dialog.destroy,
+        font=("Segoe UI", 11, "bold"),
+        bg=PROXMOX_ORANGE,
+        fg="white",
+        activebackground="#ff8126",
+        activeforeground="white",
+        bd=0,
+        padx=18,
+        pady=8,
+    ).pack(side=tk.RIGHT)
+    
+    dialog.wait_window()
+
+
+def check_server_availability(server_config: dict[str, Any]) -> tuple[bool, str | None]:
+    """Check if a server is reachable.
+    
+    Returns:
+        (is_available, error_message)
+    """
+    host = server_config.get("host")
+    username = server_config.get("username")
+    password = server_config.get("password")
+    verify_ssl = server_config.get("verify_ssl", False)
+    trusted_cert = server_config.get("trusted_cert")
+    trusted_fp = server_config.get("trusted_cert_fingerprint")
+    
+    if not all([host, username, password]):
+        return False, "Incomplete credentials"
+    
+    client: ProxmoxClient | None = None
+    try:
+        client = ProxmoxClient(
+            host=host,
+            username=username,
+            password=password,
+            verify_ssl=verify_ssl,
+            trusted_cert=trusted_cert,
+            trusted_fingerprint=trusted_fp,
+        )
+        # Try a simple API call to verify connection
+        client.get_nodes()
+        return True, None
+    except Exception as exc:
+        error_msg = str(exc)
+        # Check for common connection errors
+        if "no route to host" in error_msg.lower() or "errno 113" in error_msg.lower():
+            return False, "Server is down or unreachable"
+        elif "connection" in error_msg.lower() and "refused" in error_msg.lower():
+            return False, "Connection refused"
+        elif "timeout" in error_msg.lower():
+            return False, "Connection timeout"
+        else:
+            return False, f"Connection error: {error_msg}"
+    finally:
+        if client:
+            client.close()
+
+
+def find_first_available_server(account: dict) -> int | None:
+    """Find the first available server in the account.
+    
+    Returns the index of the first available server, or None if none are available.
+    """
+    servers = get_all_proxmox_servers(account)
+    if not servers:
+        return None
+    
+    for idx, server in enumerate(servers):
+        is_available, _ = check_server_availability(server)
+        if is_available:
+            return idx
+    
+    return None
+
+
 def _switch_server(root: tk.Tk, account: dict, servers: list[dict[str, Any]], selected_name: str) -> None:
     """Switch to the selected server and refresh the dashboard."""
     # Find the server index by name
     for idx, server in enumerate(servers):
         server_name = server.get("name") or server.get("host", "Unknown")
         if server_name == selected_name:
-            set_active_server(account, idx)
-            # Save the account
-            store = getattr(root, "account_store", None)
-            if store:
-                store.save_account(account)
-            # Clear dashboard data and refresh
-            root.app_state["dashboard_data"] = None  # type: ignore[index]
-            fetch_dashboard_data(root, mode="full", force=True)
+            # Check if server is available before switching (in background to avoid blocking)
+            def check_and_switch() -> None:
+                is_available, error_msg = check_server_availability(server)
+                
+                def update_ui() -> None:
+                    if not is_available:
+                        # Show styled warning message
+                        _styled_warning(
+                            root,
+                            "Server Unavailable",
+                            f"Server '{server_name}' is currently down or unreachable.\n\n{error_msg or 'Unable to connect to server.'}",
+                        )
+                        # Don't switch to unavailable server
+                        return
+                    
+                    set_active_server(account, idx)
+                    # Save the account
+                    store = getattr(root, "account_store", None)
+                    if store:
+                        store.save_account(account)
+                    # Clear dashboard data and refresh
+                    root.app_state["dashboard_data"] = None  # type: ignore[index]
+                    fetch_dashboard_data(root, mode="full", force=True)
+                
+                root.after(0, update_ui)
+            
+            # Run check in background thread
+            threading.Thread(target=check_and_switch, daemon=True).start()
             break
 
 
@@ -149,8 +287,7 @@ def clear_content(root: tk.Tk) -> None:
 
 
 CARD_MIN_WIDTH = 420
-AUTO_REFRESH_INTERVAL_MS = 15000
-AUTO_REFRESH_INTERVAL_MS = 15000
+DEFAULT_AUTO_REFRESH_INTERVAL_MS = 15000  # 15 seconds
 
 
 def create_card(parent: tk.Widget, title: str) -> tuple[tk.Frame, tk.Frame]:
@@ -2278,22 +2415,66 @@ def request_manual_refresh(root: tk.Tk) -> None:
 
 
 def ensure_auto_refresh(root: tk.Tk) -> None:
+    """Start auto-refresh if enabled in preferences."""
+    # Check if auto-refresh is enabled
+    auto_refresh_enabled = get_preference(root, "auto_refresh_enabled", True)
+    if not auto_refresh_enabled:
+        return
+    
     if getattr(root, "_auto_refresh_started", False):  # type: ignore[attr-defined]
         return
     root._auto_refresh_started = True  # type: ignore[attr-defined]
 
+    # Get refresh interval from preferences (default 15 seconds)
+    interval_seconds = get_preference(root, "auto_refresh_interval_seconds", 15)
+    interval_ms = interval_seconds * 1000
+
     def tick() -> None:
         if not root.winfo_exists():
             return
+        # Check again if auto-refresh is still enabled
+        auto_refresh_enabled = get_preference(root, "auto_refresh_enabled", True)
+        if not auto_refresh_enabled:
+            root._auto_refresh_started = False  # type: ignore[attr-defined]
+            return
+        
         if root.app_state.get("current_view") == "home":  # type: ignore[index]
             fetch_dashboard_data(root, mode="auto")
-        root._auto_refresh_id = root.after(AUTO_REFRESH_INTERVAL_MS, tick)  # type: ignore[attr-defined]
+        
+        # Get current interval (in case it changed)
+        interval_seconds = get_preference(root, "auto_refresh_interval_seconds", 15)
+        interval_ms = interval_seconds * 1000
+        root._auto_refresh_id = root.after(interval_ms, tick)  # type: ignore[attr-defined]
 
-    root._auto_refresh_id = root.after(AUTO_REFRESH_INTERVAL_MS, tick)  # type: ignore[attr-defined]
+    root._auto_refresh_id = root.after(interval_ms, tick)  # type: ignore[attr-defined]
 
 
 def go_home(root: tk.Tk) -> None:
     account = root.app_state.get("account")  # type: ignore[index]
+    
+    # If multiple servers exist, check if active server is available in background
+    # If not, auto-switch to first available server
+    def check_and_switch() -> None:
+        if account:
+            servers = get_all_proxmox_servers(account)
+            if len(servers) > 1:
+                active_config = get_active_proxmox_config(account)
+                if active_config:
+                    is_available, _ = check_server_availability(active_config)
+                    if not is_available:
+                        # Active server is down, try to find an available one
+                        available_idx = find_first_available_server(account)
+                        if available_idx is not None:
+                            set_active_server(account, available_idx)
+                            store = getattr(root, "account_store", None)
+                            if store:
+                                store.save_account(account)
+                            # Refresh dashboard with new server
+                            root.after(0, lambda: fetch_dashboard_data(root, mode="full", force=True))
+    
+    # Run check in background thread to avoid blocking UI
+    threading.Thread(target=check_and_switch, daemon=True).start()
+    
     render_dashboard(root, account)
     fetch_dashboard_data(root, mode="full", force=True)
     ensure_auto_refresh(root)
@@ -2346,9 +2527,53 @@ def fetch_dashboard_data(root: tk.Tk, *, mode: str = "auto", force: bool = False
                 summary = update_runtime_summary(client, existing_summary)
             payload = {"summary": summary}
         except ProxmoxAPIError as exc:
-            payload = {"error": str(exc)}
+            error_msg = str(exc)
+            # Check if this is a connection error
+            if "no route to host" in error_msg.lower() or "errno 113" in error_msg.lower() or "connection" in error_msg.lower():
+                # Try to auto-switch to available server if multiple servers exist
+                servers = get_all_proxmox_servers(account)
+                if len(servers) > 1:
+                    available_idx = find_first_available_server(account)
+                    if available_idx is not None:
+                        # Auto-switch to available server
+                        set_active_server(account, available_idx)
+                        store = getattr(root, "account_store", None)
+                        if store:
+                            store.save_account(account)
+                        # Retry with new server
+                        root.after(0, lambda: fetch_dashboard_data(root, mode=mode, force=True))
+                        return
+                    else:
+                        payload = {"error": "All servers are currently down or unreachable."}
+                else:
+                    # Single server - show error
+                    payload = {"error": "Server is down or unreachable. Please ensure the server is running and try again."}
+            else:
+                payload = {"error": str(exc)}
         except Exception as exc:  # pragma: no cover
-            payload = {"error": f"Unexpected error: {exc}"}
+            error_msg = str(exc)
+            # Check if this is a connection error
+            if "no route to host" in error_msg.lower() or "errno 113" in error_msg.lower() or "connection" in error_msg.lower():
+                # Try to auto-switch to available server if multiple servers exist
+                servers = get_all_proxmox_servers(account)
+                if len(servers) > 1:
+                    available_idx = find_first_available_server(account)
+                    if available_idx is not None:
+                        # Auto-switch to available server
+                        set_active_server(account, available_idx)
+                        store = getattr(root, "account_store", None)
+                        if store:
+                            store.save_account(account)
+                        # Retry with new server
+                        root.after(0, lambda: fetch_dashboard_data(root, mode=mode, force=True))
+                        return
+                    else:
+                        payload = {"error": "All servers are currently down or unreachable."}
+                else:
+                    # Single server - show error
+                    payload = {"error": "Server is down or unreachable. Please ensure the server is running and try again."}
+            else:
+                payload = {"error": f"Unexpected error: {exc}"}
         finally:
             if client:
                 client.close()
@@ -2437,6 +2662,18 @@ def setup_menu(root: tk.Tk) -> None:
         command=lambda: open_placeholder_view(root, build_shell_view, "Shell"),
     )
     menubar.add_cascade(label="Settings", menu=settings_menu)
+
+    # Disks menu
+    disks_menu = tk.Menu(menubar, **menu_kwargs)
+    disks_menu.add_command(
+        label="List disks & Directories",
+        command=lambda: open_placeholder_view(root, build_list_disks_view, "List Disks & Directories"),
+    )
+    disks_menu.add_command(
+        label="Create VM disk",
+        command=lambda: open_placeholder_view(root, build_create_disk_view, "Create VM Disk"),
+    )
+    menubar.add_cascade(label="Disks", menu=disks_menu)
 
     # Consoles menu removed per new design (use left dock instead)
 

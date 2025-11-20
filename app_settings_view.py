@@ -293,5 +293,181 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         justify=tk.LEFT,
     ).pack(anchor=tk.W, fill=tk.X, padx=20, pady=(0, 20))
 
+    # Auto-Refresh Settings Card
+    refresh_card = tk.Frame(frame, bg=PROXMOX_MEDIUM)
+    refresh_card.pack(fill=tk.X, padx=40, pady=(20, 0))
+
+    tk.Label(
+        refresh_card,
+        text="Auto-Refresh Settings",
+        font=("Segoe UI", 16, "bold"),
+        fg=PROXMOX_LIGHT,
+        bg=PROXMOX_MEDIUM,
+    ).pack(anchor=tk.W, pady=(20, 4), padx=20)
+
+    tk.Label(
+        refresh_card,
+        text=(
+            "Control how often the dashboard automatically refreshes data from your Proxmox server. "
+            "You can disable auto-refresh and manually refresh using the refresh button on the dashboard."
+        ),
+        font=("Segoe UI", 11),
+        fg="#cfd3da",
+        bg=PROXMOX_MEDIUM,
+        wraplength=760,
+        justify=tk.LEFT,
+    ).pack(anchor=tk.W, fill=tk.X, padx=20, pady=(0, 15))
+
+    refresh_settings_frame = tk.Frame(refresh_card, bg=PROXMOX_MEDIUM)
+    refresh_settings_frame.pack(fill=tk.X, padx=20, pady=(0, 20))
+
+    # Auto-refresh enabled checkbox
+    auto_refresh_enabled = tk.BooleanVar(value=get_preference(root, "auto_refresh_enabled", True))
+    
+    checkbox_frame = tk.Frame(refresh_settings_frame, bg=PROXMOX_MEDIUM)
+    checkbox_frame.pack(fill=tk.X, pady=(0, 15))
+    
+    tk.Checkbutton(
+        checkbox_frame,
+        text="Enable Auto-Refresh",
+        variable=auto_refresh_enabled,
+        font=("Segoe UI", 11, "bold"),
+        fg=PROXMOX_LIGHT,
+        bg=PROXMOX_MEDIUM,
+        activebackground=PROXMOX_MEDIUM,
+        activeforeground=PROXMOX_LIGHT,
+        selectcolor=PROXMOX_DARK,
+        onvalue=True,
+        offvalue=False,
+    ).pack(side=tk.LEFT)
+
+    # Refresh interval settings
+    interval_frame = tk.Frame(refresh_settings_frame, bg=PROXMOX_MEDIUM)
+    interval_frame.pack(fill=tk.X, pady=(0, 15))
+
+    tk.Label(
+        interval_frame,
+        text="Refresh Interval:",
+        font=("Segoe UI", 11, "bold"),
+        fg=PROXMOX_LIGHT,
+        bg=PROXMOX_MEDIUM,
+        width=15,
+        anchor="w",
+    ).pack(side=tk.LEFT, padx=(0, 10))
+
+    # Default interval is 15 seconds (15000 ms)
+    default_interval_seconds = get_preference(root, "auto_refresh_interval_seconds", 15)
+    interval_var = tk.StringVar(value=str(default_interval_seconds))
+    
+    interval_entry = tk.Entry(
+        interval_frame,
+        textvariable=interval_var,
+        font=("Segoe UI", 11),
+        bg="#1f242b",
+        fg=PROXMOX_LIGHT,
+        insertbackground=PROXMOX_LIGHT,
+        bd=0,
+        relief="flat",
+        highlightthickness=1,
+        highlightbackground="#363c45",
+        highlightcolor=PROXMOX_ORANGE,
+        width=8,
+    )
+    interval_entry.pack(side=tk.LEFT, padx=(0, 10))
+
+    tk.Label(
+        interval_frame,
+        text="seconds",
+        font=("Segoe UI", 11),
+        fg="#cfd3da",
+        bg=PROXMOX_MEDIUM,
+    ).pack(side=tk.LEFT)
+
+    refresh_status_var = tk.StringVar(value="")
+
+    def save_refresh_settings() -> None:
+        """Save auto-refresh settings."""
+        try:
+            interval_value = int(interval_var.get().strip())
+            if interval_value < 5:
+                messagebox.showerror(
+                    "Invalid Interval",
+                    "Refresh interval must be at least 5 seconds.",
+                    parent=root,
+                )
+                return
+            if interval_value > 3600:
+                messagebox.showerror(
+                    "Invalid Interval",
+                    "Refresh interval cannot exceed 3600 seconds (1 hour).",
+                    parent=root,
+                )
+                return
+        except ValueError:
+            messagebox.showerror(
+                "Invalid Interval",
+                "Please enter a valid number for the refresh interval.",
+                parent=root,
+            )
+            return
+        
+        set_preference(root, "auto_refresh_enabled", auto_refresh_enabled.get())
+        set_preference(root, "auto_refresh_interval_seconds", interval_value)
+        
+        # Update auto-refresh if it's running
+        if hasattr(root, "_auto_refresh_started") and root._auto_refresh_started:
+            # Stop current auto-refresh
+            if hasattr(root, "_auto_refresh_id"):
+                root.after_cancel(root._auto_refresh_id)
+            root._auto_refresh_started = False
+        
+        # If auto-refresh is enabled and user is on home view, restart it
+        if auto_refresh_enabled.get():
+            app_state = getattr(root, "app_state", None)
+            if isinstance(app_state, dict) and app_state.get("current_view") == "home":
+                # Schedule restart after a short delay to ensure settings are saved
+                def restart_if_on_home() -> None:
+                    # Check if still on home view
+                    app_state = getattr(root, "app_state", None)
+                    if isinstance(app_state, dict) and app_state.get("current_view") == "home":
+                        # Check if ensure_auto_refresh is available (avoid circular import)
+                        try:
+                            # Use getattr to check if function exists in main module
+                            import sys
+                            main_module = sys.modules.get("main")
+                            if main_module and hasattr(main_module, "ensure_auto_refresh"):
+                                main_module.ensure_auto_refresh(root)
+                        except Exception:
+                            pass  # Will restart when user navigates home
+                root.after(200, restart_if_on_home)
+        
+        refresh_status_var.set("Auto-refresh settings saved successfully.")
+
+    save_refresh_button_frame = tk.Frame(refresh_card, bg=PROXMOX_MEDIUM)
+    save_refresh_button_frame.pack(fill=tk.X, padx=20, pady=(0, 10))
+
+    tk.Button(
+        save_refresh_button_frame,
+        text="Save Refresh Settings",
+        command=save_refresh_settings,
+        font=("Segoe UI", 11, "bold"),
+        bg=PROXMOX_ORANGE,
+        fg="white",
+        activebackground="#ff8126",
+        activeforeground="white",
+        bd=0,
+        padx=16,
+        pady=8,
+    ).pack(side=tk.LEFT)
+
+    refresh_status_label = tk.Label(
+        save_refresh_button_frame,
+        textvariable=refresh_status_var,
+        font=("Segoe UI", 10),
+        fg="#7ddc88",
+        bg=PROXMOX_MEDIUM,
+    )
+    refresh_status_label.pack(side=tk.LEFT, padx=(15, 0))
+
     return frame
 

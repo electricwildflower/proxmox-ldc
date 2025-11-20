@@ -689,6 +689,47 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         dialog.wait_window()
         return response["value"]
 
+    def styled_warning(title: str, message: str) -> None:
+        dialog = tk.Toplevel(root)
+        dialog.title(title)
+        dialog.configure(bg=PROXMOX_DARK)
+        dialog.transient(root)
+        dialog.grab_set()
+
+        tk.Label(
+            dialog,
+            text=title,
+            font=("Segoe UI", 14, "bold"),
+            fg=PROXMOX_ORANGE,
+            bg=PROXMOX_DARK,
+        ).pack(anchor=tk.W, padx=25, pady=(20, 6))
+
+        tk.Label(
+            dialog,
+            text=message,
+            font=("Segoe UI", 11),
+            fg=PROXMOX_LIGHT,
+            bg=PROXMOX_DARK,
+            wraplength=420,
+            justify=tk.LEFT,
+        ).pack(fill=tk.X, padx=25, pady=(0, 15))
+
+        tk.Button(
+            dialog,
+            text="Close",
+            command=dialog.destroy,
+            font=("Segoe UI", 10, "bold"),
+            bg=PROXMOX_ORANGE,
+            fg="white",
+            activebackground="#ff8126",
+            activeforeground="white",
+            bd=0,
+            padx=16,
+            pady=6,
+        ).pack(padx=25, pady=(0, 20))
+
+        dialog.wait_window()
+
     def filtered_containers() -> list[dict[str, Any]]:
         term = search_var.get().strip().lower()
         containers: list[dict[str, Any]] = list(data_holder.get("containers", []))
@@ -845,6 +886,88 @@ def build_view(parent: tk.Widget) -> tk.Frame:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def delete_container(ct: dict[str, Any]) -> None:
+        status = str(ct.get("status", "")).lower()
+        name = ct.get("name") or f"Container {ct.get('vmid')}"
+        vmid = ct.get("vmid")
+        if vmid is None:
+            messagebox.showerror("Unknown Container", "Unable to determine the container ID.", parent=root)
+            return
+
+        if status == "running":
+            styled_warning(
+                "Container is running",
+                f"The container '{name}' is currently running.\n\nPlease stop it before attempting to delete.",
+            )
+            return
+
+        if not styled_confirm(
+            "Delete Container",
+            f"Are you sure you want to delete '{name}' (CT {vmid})?\n\n"
+            "This will permanently remove the container and all of its data. This action cannot be undone.",
+        ):
+            return
+
+        account = getattr(root, "app_state", {}).get("account") if hasattr(root, "app_state") else None
+        summary = data_holder.get("summary")
+        if not account or not summary:
+            messagebox.showerror("Unavailable", "Account or container data is not ready yet.", parent=root)
+            return
+
+        proxmox_cfg = _get_active_proxmox_config(account) or {}
+        host = proxmox_cfg.get("host")
+        username = proxmox_cfg.get("username")
+        password = proxmox_cfg.get("password")
+        verify_ssl = proxmox_cfg.get("verify_ssl", False)
+        trusted_cert = proxmox_cfg.get("trusted_cert")
+        trusted_fp = proxmox_cfg.get("trusted_cert_fingerprint")
+        node_name = getattr(summary, "node_name", None) or ct.get("node")
+
+        if not all([host, username, password, node_name]):
+            messagebox.showerror(
+                "Missing information",
+                "Incomplete connection details or node information.",
+                parent=root,
+            )
+            return
+
+        status_var.set(f"Deleting {name}...")
+
+        def worker() -> None:
+            client: ProxmoxClient | None = None
+            message = ""
+            try:
+                client = ProxmoxClient(
+                    host=host,
+                    username=username,
+                    password=password,
+                    verify_ssl=verify_ssl,
+                    trusted_cert=trusted_cert,
+                    trusted_fingerprint=trusted_fp,
+                )
+                delete_result = client.delete_container(node_name, vmid)
+                task_id = delete_result.get("upid") if isinstance(delete_result, dict) else None
+                message = f"{name} is being deleted."
+            except ProxmoxAPIError as exc:
+                message = f"Delete failed: {exc}"
+            except Exception as exc:  # pragma: no cover
+                message = f"Unexpected error: {exc}"
+            finally:
+                if client:
+                    client.close()
+
+            def finalize() -> None:
+                status_var.set(message)
+                root.after(1500, lambda: refresh_data(force=True))
+                root.after(4000, lambda: refresh_data(force=True))
+                refresh_cb = getattr(root, "trigger_dashboard_refresh", None)
+                if callable(refresh_cb):
+                    refresh_cb(mode="full", force=True)
+
+            root.after(0, finalize)
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def render_container_row(ct: dict[str, Any]) -> None:
         row = tk.Frame(rows_container, bg=PROXMOX_MEDIUM, highlightthickness=1, highlightbackground="#3c434e")
         row.pack(fill=tk.X, pady=6)
@@ -907,6 +1030,7 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         action_button("Start", lambda ct=ct: perform_container_action("start", ct), not running)
         action_button("Stop", lambda ct=ct: perform_container_action("stop", ct), running)
         action_button("Restart", lambda ct=ct: perform_container_action("restart", ct), running)
+        action_button("Delete", lambda ct=ct: delete_container(ct), True)
 
         def open_console(ct_obj: dict[str, Any]) -> None:
             """Launch the container console in a separate viewer window."""
