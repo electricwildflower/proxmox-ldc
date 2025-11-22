@@ -536,6 +536,38 @@ def show_device_management(
                         padx=4,
                         pady=2,
                     ).pack(side=tk.LEFT, padx=1)
+                
+                # Remove button
+                def remove_device(i: int) -> None:
+                    device_to_remove = device_list[i]
+                    device_key = device_to_remove.get("key", "Unknown")
+                    device_type = device_to_remove.get("type", "Device")
+                    
+                    from main import styled_confirm
+                    if styled_confirm(
+                        "Remove Device",
+                        f"Are you sure you want to remove {device_type} device '{device_key}' from this VM?\n\n"
+                        f"Note: You will need to shut down and restart the VM for the changes to take effect.",
+                        parent
+                    ):
+                        device_list.pop(i)
+                        render_device_list()
+                        update_scrollregion()
+                
+                tk.Button(
+                    actions_frame,
+                    text="✕",
+                    command=lambda i=idx: remove_device(i),
+                    font=("Segoe UI", 10, "bold"),
+                    bg="#f44336",
+                    fg="white",
+                    activebackground="#d32f2f",
+                    activeforeground="white",
+                    bd=0,
+                    width=3,
+                    padx=4,
+                    pady=2,
+                ).pack(side=tk.LEFT, padx=(5, 0))
         
         # Add device section
         add_device_section = tk.Frame(device_list_frame, bg=PROXMOX_DARK)
@@ -1136,6 +1168,25 @@ def show_device_management(
                 new_config: dict[str, Any] = {}
                 delete_keys: list[str] = []
                 
+                # Find devices that were in the original config but are no longer in device_list (removed devices)
+                original_device_keys = set()
+                for key in vm_config.keys():
+                    if key.startswith(("scsi", "virtio", "ide", "sata", "usb", "hostpci")):
+                        original_device_keys.add(key)
+                    elif key.startswith("unused") and any(key[6:].startswith(prefix) for prefix in ("scsi", "virtio", "ide", "sata", "usb", "hostpci")):
+                        original_device_keys.add(key[6:])  # Add the base key without "unused"
+                
+                current_device_keys = {device["key"] for device in device_list}
+                removed_device_keys = original_device_keys - current_device_keys
+                
+                # Mark removed devices for deletion
+                for removed_key in removed_device_keys:
+                    # Check if it was unused or enabled
+                    if removed_key in vm_config:
+                        delete_keys.append(removed_key)
+                    if f"unused{removed_key}" in vm_config:
+                        delete_keys.append(f"unused{removed_key}")
+                
                 # Process devices in new order
                 for device in device_list:
                     device_key = device["key"]
@@ -1210,12 +1261,19 @@ def show_device_management(
                 if boot_order:
                     new_config["boot"] = "order=" + ";".join(boot_order)
                 
+                # Add delete parameter if there are keys to delete
+                if delete_keys:
+                    new_config["delete"] = ",".join(delete_keys)
+                
                 # Apply changes
                 client.update_vm_config(node_name, vmid, new_config)
                 
                 def show_success() -> None:
                     from main import styled_info
-                    styled_info("Changes Saved", "Device configuration has been updated successfully.", parent)
+                    message = "Device configuration has been updated successfully."
+                    if delete_keys:
+                        message += "\n\nNote: If you removed any devices, you will need to shut down and restart the VM for the changes to take full effect."
+                    styled_info("Changes Saved", message, parent)
                     go_back()
                 parent.after(0, show_success)
                 

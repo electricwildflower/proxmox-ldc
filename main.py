@@ -7,6 +7,12 @@ from pathlib import Path
 from tkinter import font, messagebox, ttk
 from typing import Any
 
+try:
+    from PIL import Image, ImageTk
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+
 from add_container_view import build_view as build_add_container_view
 from add_vm_view import build_view as build_add_vm_view
 from app_settings_view import build_view as build_app_settings_view
@@ -323,6 +329,89 @@ def styled_error(title: str, message: str, parent: tk.Widget | None = None) -> N
     dialog.wait_window()
 
 
+def styled_confirm(title: str, message: str, parent: tk.Widget | None = None) -> bool:
+    """Show a styled confirmation dialog. Uses root window if parent not provided. Returns True if confirmed."""
+    if parent is None:
+        root = tk._default_root
+        if root is None:
+            import tkinter.messagebox as messagebox
+            return messagebox.askyesno(title, message)
+        parent = root
+    
+    dialog = tk.Toplevel(parent)
+    dialog.title(title)
+    dialog.configure(bg=PROXMOX_DARK)
+    dialog.transient(parent.winfo_toplevel())
+    dialog.grab_set()
+    dialog.resizable(True, True)
+    dialog.minsize(600, 250)
+    
+    # Center the dialog
+    parent.update_idletasks()
+    x = parent.winfo_rootx() + (parent.winfo_width() // 2) - 300
+    y = parent.winfo_rooty() + (parent.winfo_height() // 2) - 125
+    dialog.geometry(f"600x250+{x}+{y}")
+    
+    tk.Label(
+        dialog,
+        text=title,
+        font=("Segoe UI", 14, "bold"),
+        fg=PROXMOX_ORANGE,
+        bg=PROXMOX_DARK,
+        anchor="w",
+    ).pack(fill=tk.X, padx=24, pady=(20, 6))
+    
+    tk.Label(
+        dialog,
+        text=message,
+        font=("Segoe UI", 11),
+        fg=PROXMOX_LIGHT,
+        bg=PROXMOX_DARK,
+        wraplength=550,
+        justify=tk.LEFT,
+    ).pack(fill=tk.X, padx=24, pady=(0, 16))
+    
+    response = {"value": False}
+    
+    def choose(value: bool) -> None:
+        response["value"] = value
+        dialog.destroy()
+    
+    actions = tk.Frame(dialog, bg=PROXMOX_DARK)
+    actions.pack(fill=tk.X, padx=24, pady=(0, 20))
+    
+    tk.Button(
+        actions,
+        text="Yes",
+        command=lambda: choose(True),
+        font=("Segoe UI", 11, "bold"),
+        bg=PROXMOX_ORANGE,
+        fg="white",
+        activebackground="#ff8126",
+        activeforeground="white",
+        bd=0,
+        padx=18,
+        pady=8,
+    ).pack(side=tk.RIGHT, padx=(10, 0))
+    
+    tk.Button(
+        actions,
+        text="No",
+        command=lambda: choose(False),
+        font=("Segoe UI", 11, "bold"),
+        bg=PROXMOX_MEDIUM,
+        fg=PROXMOX_LIGHT,
+        activebackground="#3a414d",
+        activeforeground=PROXMOX_LIGHT,
+        bd=0,
+        padx=18,
+        pady=8,
+    ).pack(side=tk.RIGHT)
+    
+    dialog.wait_window()
+    return response["value"]
+
+
 def check_server_availability(server_config: dict[str, Any]) -> tuple[bool, str | None]:
     """Check if a server is reachable.
     
@@ -569,15 +658,47 @@ def render_dashboard(root: tk.Tk, account: dict | None) -> None:
     title_frame = tk.Frame(header_frame, bg=PROXMOX_DARK)
     title_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
     
-    header_font = font.Font(family="Helvetica", size=36, weight="bold")
-    header = tk.Label(
-        title_frame,
-        text="Proxmox-LDC",
-        font=header_font,
-        fg=PROXMOX_ORANGE,
-        bg=PROXMOX_DARK,
-    )
-    header.pack(side=tk.LEFT)
+    # Load and display banner image
+    banner_image = None
+    if PIL_AVAILABLE:
+        try:
+            # Get the path to the image file (relative to main.py location)
+            script_dir = Path(__file__).parent
+            image_path = script_dir / "images" / "proxmox-ldc.png"
+            
+            if image_path.exists():
+                # Load and resize image if needed
+                img = Image.open(image_path)
+                # Keep aspect ratio, but limit height to reasonable size
+                max_height = 150
+                if img.height > max_height:
+                    ratio = max_height / img.height
+                    new_width = int(img.width * ratio)
+                    img = img.resize((new_width, max_height), Image.Resampling.LANCZOS)
+                
+                banner_image = ImageTk.PhotoImage(img)
+        except Exception:
+            pass  # Fall back to text if image loading fails
+    
+    if banner_image:
+        header = tk.Label(
+            title_frame,
+            image=banner_image,
+            bg=PROXMOX_DARK,
+        )
+        header.image = banner_image  # Keep a reference to prevent garbage collection
+        header.pack(side=tk.LEFT)
+    else:
+        # Fallback to text if image not available
+        header_font = font.Font(family="Helvetica", size=36, weight="bold")
+        header = tk.Label(
+            title_frame,
+            text="Proxmox-LDC",
+            font=header_font,
+            fg=PROXMOX_ORANGE,
+            bg=PROXMOX_DARK,
+        )
+        header.pack(side=tk.LEFT)
 
     # Server selector dropdown
     servers = get_all_proxmox_servers(account)
