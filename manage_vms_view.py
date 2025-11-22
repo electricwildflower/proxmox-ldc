@@ -856,6 +856,7 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         def worker() -> None:
             client: ProxmoxClient | None = None
             message = ""
+            pci_conflict_detected = False
             try:
                 client = ProxmoxClient(
                     host=host,
@@ -866,8 +867,125 @@ def build_view(parent: tk.Widget) -> tk.Frame:
                     trusted_fingerprint=trusted_fp,
                 )
                 if action == "start":
-                    client.start_vm(node_name, vmid)
-                    message = f"{name} is starting."
+                    # Proactively check for PCI device conflicts before starting
+                    try:
+                        vm_config = client.get_vm_config(node_name, vmid)
+                        all_vms = client.get_node_vms(node_name)
+                        pci_conflicts: list[tuple[str, int]] = []
+                        
+                        for key, value in vm_config.items():
+                            if key.startswith("hostpci") and isinstance(value, str):
+                                # Extract PCI ID from value
+                                if "host=" in value:
+                                    pci_id = value.split("host=")[1].split(",")[0].strip()
+                                else:
+                                    pci_id = value.split(",")[0].strip()
+                                
+                                # Check if this PCI device is used by other running VMs
+                                for vm in all_vms:
+                                    other_vmid = vm.get("vmid")
+                                    if other_vmid and other_vmid != vmid and vm.get("status") == "running":
+                                        try:
+                                            other_config = client.get_vm_config(node_name, other_vmid)
+                                            for other_key, other_value in other_config.items():
+                                                if other_key.startswith("hostpci") and isinstance(other_value, str):
+                                                    if "host=" in other_value:
+                                                        other_pci_id = other_value.split("host=")[1].split(",")[0].strip()
+                                                    else:
+                                                        other_pci_id = other_value.split(",")[0].strip()
+                                                    # Check if PCI IDs match (including functions)
+                                                    if other_pci_id == pci_id or other_pci_id.startswith(pci_id.split(".")[0] + ".") or pci_id.startswith(other_pci_id.split(".")[0] + "."):
+                                                        pci_conflicts.append((pci_id, other_vmid))
+                                        except Exception:
+                                            pass
+                        
+                        if pci_conflicts:
+                            conflict_messages = []
+                            for pci_id, conflict_vmid in pci_conflicts:
+                                conflict_messages.append(f"PCI device {pci_id} is in use by running VM {conflict_vmid}")
+                            
+                            pci_conflict_detected = True
+                            
+                            def show_conflict() -> None:
+                                from main import styled_warning
+                                styled_warning(
+                                    "PCI Device Conflict",
+                                    f"Cannot start VM {name} (ID: {vmid}) because the following PCI devices are already in use by other running VMs:\n\n" + "\n".join(conflict_messages) + "\n\nPlease stop the other VMs first or remove the PCI devices from this VM.",
+                                    root
+                                )
+                                status_var.set(f"Cannot start {name} - PCI device conflict.")
+                            root.after(0, show_conflict)
+                            return
+                    except Exception:
+                        pass  # If conflict check fails, continue with start attempt
+                    
+                    try:
+                        client.start_vm(node_name, vmid)
+                        message = f"{name} is starting."
+                    except ProxmoxAPIError as exc:
+                        # Get full error text - ProxmoxAPIError includes details in the message
+                        full_error_text = str(exc)
+                        # Also check args in case details are there
+                        if hasattr(exc, "args") and exc.args:
+                            full_error_text += " " + " ".join(str(arg) for arg in exc.args)
+                        
+                        # Check if this is a PCI device conflict error
+                        import re
+                        pci_conflict_patterns = [
+                            r"PCI device\s+['\"]?([^'\"]+)['\"]?\s+already in use by VMID\s+['\"]?(\d+)['\"]?",
+                            r"PCI device\s+['\"]?([^'\"]+)['\"]?\s+already in use by\s+VMID\s+['\"]?(\d+)['\"]?",
+                            r"PCI device\s+['\"]?([^'\"]+)['\"]?\s+is already in use by VMID\s+['\"]?(\d+)['\"]?",
+                            r"PCI device\s+['\"]?([^'\"]+)['\"]?\s+already in use",
+                        ]
+                        
+                        pci_conflict_match = None
+                        for pattern in pci_conflict_patterns:
+                            pci_conflict_match = re.search(pattern, full_error_text, re.IGNORECASE)
+                            if pci_conflict_match:
+                                break
+                        
+                        if pci_conflict_match:
+                            pci_device = pci_conflict_match.group(1) if len(pci_conflict_match.groups()) >= 1 else "unknown"
+                            conflict_vmid = pci_conflict_match.group(2) if len(pci_conflict_match.groups()) >= 2 else "unknown"
+                            
+                            pci_conflict_detected = True
+                            
+                            def show_pci_conflict() -> None:
+                                from main import styled_warning
+                                if conflict_vmid != "unknown":
+                                    styled_warning(
+                                        "PCI Device Conflict",
+                                        f"Cannot start VM {name} (ID: {vmid}) because PCI device '{pci_device}' is already in use by VM {conflict_vmid}.\n\n"
+                                        f"Please stop VM {conflict_vmid} first if you want to use this PCI device on this VM.",
+                                        root
+                                    )
+                                    status_var.set(f"Cannot start {name} - PCI device '{pci_device}' is in use by VM {conflict_vmid}.")
+                                else:
+                                    styled_warning(
+                                        "PCI Device Conflict",
+                                        f"Cannot start VM {name} (ID: {vmid}) because PCI device '{pci_device}' is already in use by another VM.\n\n"
+                                        f"Please stop the other VM first if you want to use this PCI device on this VM.",
+                                        root
+                                    )
+                                    status_var.set(f"Cannot start {name} - PCI device '{pci_device}' is in use by another VM.")
+                            root.after(0, show_pci_conflict)
+                            return
+                        # Fallback: check if error mentions PCI device conflict even if regex doesn't match
+                        elif "PCI device" in full_error_text.lower() and "already in use" in full_error_text.lower():
+                            pci_conflict_detected = True
+                            def show_pci_conflict_generic() -> None:
+                                from main import styled_warning
+                                styled_warning(
+                                    "PCI Device Conflict",
+                                    f"Cannot start VM {name} (ID: {vmid}) because a PCI device is already in use by another VM.\n\n"
+                                    f"Please stop the other VM first if you want to use this PCI device on this VM.",
+                                    root
+                                )
+                                status_var.set(f"Cannot start {name} - PCI device conflict detected.")
+                            root.after(0, show_pci_conflict_generic)
+                            return
+                        else:
+                            message = f"API error: {exc}"
                 elif action == "stop":
                     client.stop_vm(node_name, vmid)
                     message = f"{name} is stopping."
@@ -875,6 +993,64 @@ def build_view(parent: tk.Widget) -> tk.Frame:
                     client.reboot_vm(node_name, vmid)
                     message = f"{name} is restarting."
             except ProxmoxAPIError as exc:
+                # Also check outer exception handler for PCI conflicts
+                if action == "start" and not pci_conflict_detected:
+                    full_error_text = str(exc)
+                    if hasattr(exc, "args") and exc.args:
+                        full_error_text += " " + " ".join(str(arg) for arg in exc.args)
+                    
+                    import re
+                    pci_conflict_patterns = [
+                        r"PCI device\s+['\"]?([^'\"]+)['\"]?\s+already in use by VMID\s+['\"]?(\d+)['\"]?",
+                        r"PCI device\s+['\"]?([^'\"]+)['\"]?\s+already in use by\s+VMID\s+['\"]?(\d+)['\"]?",
+                        r"PCI device\s+['\"]?([^'\"]+)['\"]?\s+is already in use by VMID\s+['\"]?(\d+)['\"]?",
+                        r"PCI device\s+['\"]?([^'\"]+)['\"]?\s+already in use",
+                    ]
+                    
+                    pci_conflict_match = None
+                    for pattern in pci_conflict_patterns:
+                        pci_conflict_match = re.search(pattern, full_error_text, re.IGNORECASE)
+                        if pci_conflict_match:
+                            break
+                    
+                    if pci_conflict_match:
+                        pci_device = pci_conflict_match.group(1) if len(pci_conflict_match.groups()) >= 1 else "unknown"
+                        conflict_vmid = pci_conflict_match.group(2) if len(pci_conflict_match.groups()) >= 2 else "unknown"
+                        
+                        def show_pci_conflict() -> None:
+                            from main import styled_warning
+                            if conflict_vmid != "unknown":
+                                styled_warning(
+                                    "PCI Device Conflict",
+                                    f"Cannot start VM {name} (ID: {vmid}) because PCI device '{pci_device}' is already in use by VM {conflict_vmid}.\n\n"
+                                    f"Please stop VM {conflict_vmid} first if you want to use this PCI device on this VM.",
+                                    root
+                                )
+                                status_var.set(f"Cannot start {name} - PCI device '{pci_device}' is in use by VM {conflict_vmid}.")
+                            else:
+                                styled_warning(
+                                    "PCI Device Conflict",
+                                    f"Cannot start VM {name} (ID: {vmid}) because PCI device '{pci_device}' is already in use by another VM.\n\n"
+                                    f"Please stop the other VM first if you want to use this PCI device on this VM.",
+                                    root
+                                )
+                                status_var.set(f"Cannot start {name} - PCI device '{pci_device}' is in use by another VM.")
+                        root.after(0, show_pci_conflict)
+                        return
+                    # Fallback: check if error mentions PCI device conflict even if regex doesn't match
+                    elif "PCI device" in full_error_text.lower() and "already in use" in full_error_text.lower():
+                        def show_pci_conflict_generic() -> None:
+                            from main import styled_warning
+                            styled_warning(
+                                "PCI Device Conflict",
+                                f"Cannot start VM {name} (ID: {vmid}) because a PCI device is already in use by another VM.\n\n"
+                                f"Please stop the other VM first if you want to use this PCI device on this VM.",
+                                root
+                            )
+                            status_var.set(f"Cannot start {name} - PCI device conflict detected.")
+                        root.after(0, show_pci_conflict_generic)
+                        return
+                
                 message = f"API error: {exc}"
             except Exception as exc:  # pragma: no cover
                 message = f"Unexpected error: {exc}"
@@ -882,18 +1058,20 @@ def build_view(parent: tk.Widget) -> tk.Frame:
                 if client:
                     client.close()
 
-            def finalize() -> None:
-                status_var.set(message)
-                # Wait a moment for the VM action to complete, then force refresh
-                # Some VMs take longer to start, so we'll do multiple refreshes
-                root.after(1000, lambda: refresh_data(force=True))
-                root.after(3000, lambda: refresh_data(force=True))  # Second refresh after 3 seconds
-                # Also trigger dashboard refresh for consistency
-                refresh_cb = getattr(root, "trigger_dashboard_refresh", None)
-                if callable(refresh_cb):
-                    refresh_cb(mode="full", force=True)
+            # Only finalize if we didn't detect a PCI conflict
+            if not pci_conflict_detected:
+                def finalize() -> None:
+                    status_var.set(message)
+                    # Wait a moment for the VM action to complete, then force refresh
+                    # Some VMs take longer to start, so we'll do multiple refreshes
+                    root.after(1000, lambda: refresh_data(force=True))
+                    root.after(3000, lambda: refresh_data(force=True))  # Second refresh after 3 seconds
+                    # Also trigger dashboard refresh for consistency
+                    refresh_cb = getattr(root, "trigger_dashboard_refresh", None)
+                    if callable(refresh_cb):
+                        refresh_cb(mode="full", force=True)
 
-            root.after(0, finalize)
+                root.after(0, finalize)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1102,7 +1280,96 @@ def build_view(parent: tk.Widget) -> tk.Frame:
                             trusted_cert=trusted_cert,
                             trusted_fingerprint=trusted_fp,
                         )
+                        
+                        # Check for PCI device conflicts before starting
+                        try:
+                            vm_config = client.get_vm_config(node_name, vmid)
+                            all_vms = client.get_node_vms(node_name)
+                            pci_conflicts: list[tuple[str, int]] = []
+                            
+                            for key, value in vm_config.items():
+                                if key.startswith("hostpci") and isinstance(value, str):
+                                    # Extract PCI ID from value
+                                    if "host=" in value:
+                                        pci_id = value.split("host=")[1].split(",")[0].strip()
+                                    else:
+                                        pci_id = value.split(",")[0].strip()
+                                    
+                                    # Check if this PCI device is used by other running VMs
+                                    for vm in all_vms:
+                                        other_vmid = vm.get("vmid")
+                                        if other_vmid and other_vmid != vmid and vm.get("status") == "running":
+                                            try:
+                                                other_config = client.get_vm_config(node_name, other_vmid)
+                                                for other_key, other_value in other_config.items():
+                                                    if other_key.startswith("hostpci") and isinstance(other_value, str):
+                                                        if "host=" in other_value:
+                                                            other_pci_id = other_value.split("host=")[1].split(",")[0].strip()
+                                                        else:
+                                                            other_pci_id = other_value.split(",")[0].strip()
+                                                        # Check if PCI IDs match (including functions)
+                                                        if other_pci_id == pci_id or other_pci_id.startswith(pci_id.split(".")[0] + ".") or pci_id.startswith(other_pci_id.split(".")[0] + "."):
+                                                            pci_conflicts.append((pci_id, other_vmid))
+                                            except Exception:
+                                                pass
+                            
+                            if pci_conflicts:
+                                conflict_messages = []
+                                for pci_id, conflict_vmid in pci_conflicts:
+                                    conflict_messages.append(f"PCI device {pci_id} is in use by running VM {conflict_vmid}")
+                                
+                                def show_conflict() -> None:
+                                    from main import styled_warning
+                                    styled_warning(
+                                        "PCI Device Conflict",
+                                        "Cannot start VM because the following PCI devices are already in use by other running VMs:\n\n" + "\n".join(conflict_messages) + "\n\nPlease stop the other VMs first or remove the PCI devices from this VM."
+                                    )
+                                    status_var.set(f"Cannot start {vm_name} - PCI device conflict.")
+                                root.after(0, show_conflict)
+                                return
+                        except Exception:
+                            pass  # If conflict check fails, continue with start attempt
+                        
                         client.start_vm(node_name, vmid)
+                    except ProxmoxAPIError as exc:
+                        error_message = str(exc)
+                        error_details = getattr(exc, "details", "")
+                        
+                        # Check if this is a PCI device conflict error
+                        # Proxmox error format: "TASK ERROR: PCI device '0000:84:00.0' already in use by VMID '109'"
+                        import re
+                        full_error_text = str(exc) + " " + str(error_details)
+                        # Try multiple patterns to catch different error message formats
+                        pci_conflict_patterns = [
+                            r"PCI device\s+['\"]?([^'\"]+)['\"]?\s+already in use by VMID\s+['\"]?(\d+)['\"]?",
+                            r"PCI device\s+['\"]?([^'\"]+)['\"]?\s+already in use by\s+VMID\s+['\"]?(\d+)['\"]?",
+                            r"PCI device\s+['\"]?([^'\"]+)['\"]?\s+is already in use by VMID\s+['\"]?(\d+)['\"]?",
+                        ]
+                        
+                        pci_conflict_match = None
+                        for pattern in pci_conflict_patterns:
+                            pci_conflict_match = re.search(pattern, full_error_text, re.IGNORECASE)
+                            if pci_conflict_match:
+                                break
+                        
+                        if pci_conflict_match:
+                            pci_device = pci_conflict_match.group(1)
+                            conflict_vmid = pci_conflict_match.group(2)
+                            
+                            def show_pci_conflict() -> None:
+                                from main import styled_warning
+                                styled_warning(
+                                    "PCI Device Conflict",
+                                    f"Cannot start VM {vm_name} (ID: {vmid}) because PCI device '{pci_device}' is already in use by VM {conflict_vmid}.\n\n"
+                                    f"Please stop VM {conflict_vmid} first if you want to use this PCI device on this VM.",
+                                    root
+                                )
+                                status_var.set(f"Cannot start {vm_name} - PCI device '{pci_device}' is in use by VM {conflict_vmid}.")
+                            root.after(0, show_pci_conflict)
+                            return
+                        
+                        # Not a PCI conflict, show generic error
+                        error_message = str(exc)
                     except Exception as exc:
                         error_message = str(exc)
                     finally:

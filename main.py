@@ -135,13 +135,14 @@ def _styled_warning(parent: tk.Widget, title: str, message: str) -> None:
     dialog.configure(bg=PROXMOX_DARK)
     dialog.transient(parent.winfo_toplevel())
     dialog.grab_set()
-    dialog.resizable(False, False)
+    dialog.resizable(True, True)
+    dialog.minsize(600, 250)
     
     # Center the dialog
     parent.update_idletasks()
-    x = parent.winfo_rootx() + (parent.winfo_width() // 2) - 250
-    y = parent.winfo_rooty() + (parent.winfo_height() // 2) - 100
-    dialog.geometry(f"500x200+{x}+{y}")
+    x = parent.winfo_rootx() + (parent.winfo_width() // 2) - 300
+    y = parent.winfo_rooty() + (parent.winfo_height() // 2) - 125
+    dialog.geometry(f"600x250+{x}+{y}")
     
     tk.Label(
         dialog,
@@ -158,7 +159,7 @@ def _styled_warning(parent: tk.Widget, title: str, message: str) -> None:
         font=("Segoe UI", 11),
         fg=PROXMOX_LIGHT,
         bg=PROXMOX_DARK,
-        wraplength=450,
+        wraplength=550,
         justify=tk.LEFT,
     ).pack(fill=tk.X, padx=24, pady=(0, 16))
     
@@ -173,6 +174,146 @@ def _styled_warning(parent: tk.Widget, title: str, message: str) -> None:
         bg=PROXMOX_ORANGE,
         fg="white",
         activebackground="#ff8126",
+        activeforeground="white",
+        bd=0,
+        padx=18,
+        pady=8,
+    ).pack(side=tk.RIGHT)
+    
+    dialog.wait_window()
+
+
+def styled_warning(title: str, message: str, parent: tk.Widget | None = None) -> None:
+    """Show a styled warning dialog. Uses root window if parent not provided."""
+    if parent is None:
+        # Try to get root window
+        root = tk._default_root
+        if root is None:
+            # Fallback to messagebox
+            import tkinter.messagebox as messagebox
+            messagebox.showwarning(title, message)
+            return
+        parent = root
+    _styled_warning(parent, title, message)
+
+
+def styled_info(title: str, message: str, parent: tk.Widget | None = None) -> None:
+    """Show a styled info dialog. Uses root window if parent not provided."""
+    if parent is None:
+        root = tk._default_root
+        if root is None:
+            import tkinter.messagebox as messagebox
+            messagebox.showinfo(title, message)
+            return
+        parent = root
+    
+    dialog = tk.Toplevel(parent)
+    dialog.title(title)
+    dialog.configure(bg=PROXMOX_DARK)
+    dialog.transient(parent.winfo_toplevel())
+    dialog.grab_set()
+    dialog.resizable(True, True)
+    dialog.minsize(600, 250)
+    
+    # Center the dialog
+    parent.update_idletasks()
+    x = parent.winfo_rootx() + (parent.winfo_width() // 2) - 300
+    y = parent.winfo_rooty() + (parent.winfo_height() // 2) - 125
+    dialog.geometry(f"600x250+{x}+{y}")
+    
+    tk.Label(
+        dialog,
+        text=title,
+        font=("Segoe UI", 14, "bold"),
+        fg=PROXMOX_ORANGE,
+        bg=PROXMOX_DARK,
+        anchor="w",
+    ).pack(fill=tk.X, padx=24, pady=(20, 6))
+    
+    tk.Label(
+        dialog,
+        text=message,
+        font=("Segoe UI", 11),
+        fg=PROXMOX_LIGHT,
+        bg=PROXMOX_DARK,
+        wraplength=550,
+        justify=tk.LEFT,
+    ).pack(fill=tk.X, padx=24, pady=(0, 16))
+    
+    actions = tk.Frame(dialog, bg=PROXMOX_DARK)
+    actions.pack(fill=tk.X, padx=24, pady=(0, 20))
+    
+    tk.Button(
+        actions,
+        text="Close",
+        command=dialog.destroy,
+        font=("Segoe UI", 11, "bold"),
+        bg=PROXMOX_ORANGE,
+        fg="white",
+        activebackground="#ff8126",
+        activeforeground="white",
+        bd=0,
+        padx=18,
+        pady=8,
+    ).pack(side=tk.RIGHT)
+    
+    dialog.wait_window()
+
+
+def styled_error(title: str, message: str, parent: tk.Widget | None = None) -> None:
+    """Show a styled error dialog. Uses root window if parent not provided."""
+    if parent is None:
+        root = tk._default_root
+        if root is None:
+            import tkinter.messagebox as messagebox
+            messagebox.showerror(title, message)
+            return
+        parent = root
+    
+    dialog = tk.Toplevel(parent)
+    dialog.title(title)
+    dialog.configure(bg=PROXMOX_DARK)
+    dialog.transient(parent.winfo_toplevel())
+    dialog.grab_set()
+    dialog.resizable(True, True)
+    dialog.minsize(600, 250)
+    
+    # Center the dialog
+    parent.update_idletasks()
+    x = parent.winfo_rootx() + (parent.winfo_width() // 2) - 300
+    y = parent.winfo_rooty() + (parent.winfo_height() // 2) - 125
+    dialog.geometry(f"600x250+{x}+{y}")
+    
+    tk.Label(
+        dialog,
+        text=title,
+        font=("Segoe UI", 14, "bold"),
+        fg="#f44336",
+        bg=PROXMOX_DARK,
+        anchor="w",
+    ).pack(fill=tk.X, padx=24, pady=(20, 6))
+    
+    tk.Label(
+        dialog,
+        text=message,
+        font=("Segoe UI", 11),
+        fg=PROXMOX_LIGHT,
+        bg=PROXMOX_DARK,
+        wraplength=550,
+        justify=tk.LEFT,
+    ).pack(fill=tk.X, padx=24, pady=(0, 16))
+    
+    actions = tk.Frame(dialog, bg=PROXMOX_DARK)
+    actions.pack(fill=tk.X, padx=24, pady=(0, 20))
+    
+    tk.Button(
+        actions,
+        text="Close",
+        command=dialog.destroy,
+        font=("Segoe UI", 11, "bold"),
+        bg="#f44336",
+        fg="white",
+        activebackground="#d32f2f",
         activeforeground="white",
         bd=0,
         padx=18,

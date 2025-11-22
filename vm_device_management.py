@@ -147,12 +147,14 @@ def show_device_management(
     available_storages: list[str] = []
     available_usb_devices: list[dict[str, Any]] = []
     available_pci_devices: list[dict[str, Any]] = []
+    pci_device_functions: dict[str, list[dict[str, Any]]] = {}  # Group PCI devices by base ID
+    all_vm_configs: dict[int, dict[str, Any]] = {}  # Store all VM configs for conflict checking
     vm_config: dict[str, Any] = {}
     proxmox_cfg: dict[str, Any] = {}
     
     def load_device_config() -> None:
         """Load VM device configuration."""
-        nonlocal vm_config, proxmox_cfg, available_isos, available_storages, available_usb_devices, available_pci_devices
+        nonlocal vm_config, proxmox_cfg, available_isos, available_storages, available_usb_devices, available_pci_devices, pci_device_functions, all_vm_configs
         
         proxmox_cfg = _get_active_proxmox_config(account) or {}
         host = proxmox_cfg.get("host")
@@ -167,7 +169,7 @@ def show_device_management(
             return
         
         def worker() -> None:
-            nonlocal vm_config, available_isos, available_storages, available_usb_devices, available_pci_devices
+            nonlocal vm_config, available_isos, available_storages, available_usb_devices, available_pci_devices, pci_device_functions, all_vm_configs
             client: ProxmoxClient | None = None
             error_msg: str | None = None
             
@@ -180,6 +182,17 @@ def show_device_management(
                     trusted_cert=trusted_cert,
                     trusted_fingerprint=trusted_fp,
                 )
+                
+                # Get all VM configs to check for PCI device conflicts
+                all_vms = client.get_node_vms(node_name)
+                all_vm_configs = {}
+                for vm in all_vms:
+                    vm_id = vm.get("vmid")
+                    if vm_id and vm_id != vmid:  # Exclude current VM
+                        try:
+                            all_vm_configs[vm_id] = client.get_vm_config(node_name, vm_id)
+                        except Exception:
+                            pass
                 
                 # Get VM config
                 vm_config = client.get_vm_config(node_name, vmid)
@@ -218,13 +231,18 @@ def show_device_management(
                 except Exception:
                     pass
                 
-                # Get PCI devices
+                # Get PCI devices and group by base ID for function detection
                 try:
                     pci_devices = client.get_node_pci_devices(node_name)
+                    pci_device_functions = {}  # Reset
+                    
                     for pci in pci_devices:
                         pci_id = pci.get("id", "")
                         if not pci_id:
                             continue
+                        
+                        # Extract base ID (e.g., "0000:00:05" from "0000:00:05.0")
+                        base_id = ".".join(pci_id.split(".")[:-1]) if "." in pci_id else pci_id
                         
                         # Proxmox API returns:
                         # - id: PCI address (e.g., "0000:00:05.0")
@@ -247,12 +265,20 @@ def show_device_management(
                         vendor = vendor.strip() if vendor else "Unknown Vendor"
                         device_name = device_name.strip() if device_name else "Unknown Device"
                         
-                        available_pci_devices.append({
+                        pci_info = {
                             "id": pci_id,
                             "name": f"{vendor} {device_name}".strip() or f"PCI Device {pci_id}",
                             "vendor": vendor,
                             "device": device_name,
-                        })
+                            "base_id": base_id,
+                        }
+                        
+                        available_pci_devices.append(pci_info)
+                        
+                        # Group by base ID for function detection
+                        if base_id not in pci_device_functions:
+                            pci_device_functions[base_id] = []
+                        pci_device_functions[base_id].append(pci_info)
                 except Exception as e:
                     # Log error for debugging
                     import sys
@@ -640,8 +666,12 @@ def show_device_management(
                 device_config_frame.usb_var = usb_var
                 
             elif device_type == "PCI":
+                # PCI device selection with conflict checking
+                pci_container = tk.Frame(device_config_frame, bg=PROXMOX_MEDIUM)
+                pci_container.pack(fill=tk.X, expand=True)
+                
                 tk.Label(
-                    device_config_frame,
+                    pci_container,
                     text="PCI Device:",
                     font=("Segoe UI", 10),
                     fg=PROXMOX_LIGHT,
@@ -650,6 +680,24 @@ def show_device_management(
                 
                 pci_var = tk.StringVar()
                 pci_values = []
+                pci_device_map: dict[str, dict[str, Any]] = {}  # Map display string to PCI device info
+                
+                def check_pci_conflict(pci_id: str) -> tuple[bool, list[int]]:
+                    """Check if PCI device is already in use by other VMs."""
+                    used_by: list[int] = []
+                    for vm_id, config in all_vm_configs.items():
+                        for key, value in config.items():
+                            if key.startswith("hostpci") and isinstance(value, str):
+                                # Extract PCI ID from value (format: "host=0000:00:05.0" or "0000:00:05.0")
+                                if "host=" in value:
+                                    config_pci_id = value.split("host=")[1].split(",")[0].strip()
+                                else:
+                                    config_pci_id = value.split(",")[0].strip()
+                                # Check if this PCI ID or any function matches
+                                if config_pci_id == pci_id or config_pci_id.startswith(pci_id.split(".")[0] + "."):
+                                    used_by.append(vm_id)
+                    return len(used_by) > 0, used_by
+                
                 for pci in available_pci_devices:
                     pci_id = pci.get('id', 'Unknown ID') or 'Unknown ID'
                     vendor = pci.get('vendor', '') or 'Unknown Vendor'
@@ -659,19 +707,150 @@ def show_device_management(
                         vendor = 'Unknown Vendor'
                     if not device or device.strip() == '':
                         device = 'Unknown Device'
-                    pci_values.append(f"{pci_id} - {vendor} - {device}")
+                    
+                    # Check for conflicts
+                    is_used, used_by_vms = check_pci_conflict(pci_id)
+                    conflict_text = f" [IN USE BY VM{'S' if len(used_by_vms) > 1 else ''}: {', '.join(map(str, used_by_vms))}]" if is_used else ""
+                    
+                    display_text = f"{pci_id} - {vendor} - {device}{conflict_text}"
+                    pci_values.append(display_text)
+                    pci_device_map[display_text] = pci
+                
                 if not pci_values:
                     pci_values = ["No PCI devices available"]
                 
                 pci_select = ttk.Combobox(
-                    device_config_frame,
+                    pci_container,
                     textvariable=pci_var,
                     values=pci_values,
                     state="readonly" if available_pci_devices else "disabled",
-                    width=40,
+                    width=50,
                 )
-                pci_select.pack(side=tk.LEFT, fill=tk.X, expand=True)
+                pci_select.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
                 device_config_frame.pci_var = pci_var
+                device_config_frame.pci_device_map = pci_device_map
+                
+                # PCI options frame
+                pci_options_frame = tk.Frame(device_config_frame, bg=PROXMOX_MEDIUM)
+                pci_options_frame.pack(fill=tk.X, pady=(10, 0))
+                
+                # Mapped vs Raw device selection
+                pci_mode_var = tk.StringVar(value="mapped")
+                tk.Label(
+                    pci_options_frame,
+                    text="Mode:",
+                    font=("Segoe UI", 10),
+                    fg=PROXMOX_LIGHT,
+                    bg=PROXMOX_MEDIUM,
+                ).pack(side=tk.LEFT, padx=(0, 5))
+                
+                tk.Radiobutton(
+                    pci_options_frame,
+                    text="Mapped",
+                    variable=pci_mode_var,
+                    value="mapped",
+                    font=("Segoe UI", 9),
+                    fg=PROXMOX_LIGHT,
+                    bg=PROXMOX_MEDIUM,
+                    selectcolor=PROXMOX_DARK,
+                    activebackground=PROXMOX_MEDIUM,
+                    activeforeground=PROXMOX_LIGHT,
+                ).pack(side=tk.LEFT, padx=(0, 10))
+                
+                tk.Radiobutton(
+                    pci_options_frame,
+                    text="Raw Device",
+                    variable=pci_mode_var,
+                    value="raw",
+                    font=("Segoe UI", 9),
+                    fg=PROXMOX_LIGHT,
+                    bg=PROXMOX_MEDIUM,
+                    selectcolor=PROXMOX_DARK,
+                    activebackground=PROXMOX_MEDIUM,
+                    activeforeground=PROXMOX_LIGHT,
+                ).pack(side=tk.LEFT, padx=(0, 10))
+                
+                device_config_frame.pci_mode_var = pci_mode_var
+                
+                # All functions checkbox (only shown for devices with multiple functions)
+                pci_all_functions_var = tk.BooleanVar(value=False)
+                pci_all_functions_cb = tk.Checkbutton(
+                    pci_options_frame,
+                    text="All Functions",
+                    variable=pci_all_functions_var,
+                    font=("Segoe UI", 9),
+                    fg=PROXMOX_LIGHT,
+                    bg=PROXMOX_MEDIUM,
+                    selectcolor=PROXMOX_DARK,
+                    activebackground=PROXMOX_MEDIUM,
+                    activeforeground=PROXMOX_LIGHT,
+                )
+                device_config_frame.pci_all_functions_var = pci_all_functions_var
+                device_config_frame.pci_all_functions_cb = pci_all_functions_cb
+                
+                # ROM-Bar checkbox
+                pci_rombar_var = tk.BooleanVar(value=False)
+                pci_rombar_cb = tk.Checkbutton(
+                    pci_options_frame,
+                    text="ROM-Bar",
+                    variable=pci_rombar_var,
+                    font=("Segoe UI", 9),
+                    fg=PROXMOX_LIGHT,
+                    bg=PROXMOX_MEDIUM,
+                    selectcolor=PROXMOX_DARK,
+                    activebackground=PROXMOX_MEDIUM,
+                    activeforeground=PROXMOX_LIGHT,
+                )
+                pci_rombar_cb.pack(side=tk.LEFT, padx=(0, 10))
+                device_config_frame.pci_rombar_var = pci_rombar_var
+                
+                # Primary GPU checkbox
+                pci_pcie_var = tk.BooleanVar(value=False)
+                pci_pcie_cb = tk.Checkbutton(
+                    pci_options_frame,
+                    text="PCI-Express",
+                    variable=pci_pcie_var,
+                    font=("Segoe UI", 9),
+                    fg=PROXMOX_LIGHT,
+                    bg=PROXMOX_MEDIUM,
+                    selectcolor=PROXMOX_DARK,
+                    activebackground=PROXMOX_MEDIUM,
+                    activeforeground=PROXMOX_LIGHT,
+                )
+                pci_pcie_cb.pack(side=tk.LEFT, padx=(0, 10))
+                device_config_frame.pci_pcie_var = pci_pcie_var
+                
+                # Primary GPU checkbox
+                pci_primary_gpu_var = tk.BooleanVar(value=False)
+                pci_primary_gpu_cb = tk.Checkbutton(
+                    pci_options_frame,
+                    text="Primary GPU",
+                    variable=pci_primary_gpu_var,
+                    font=("Segoe UI", 9),
+                    fg=PROXMOX_LIGHT,
+                    bg=PROXMOX_MEDIUM,
+                    selectcolor=PROXMOX_DARK,
+                    activebackground=PROXMOX_MEDIUM,
+                    activeforeground=PROXMOX_LIGHT,
+                )
+                pci_primary_gpu_cb.pack(side=tk.LEFT, padx=(0, 10))
+                device_config_frame.pci_primary_gpu_var = pci_primary_gpu_var
+                
+                # Update all functions checkbox visibility when PCI device is selected
+                def update_pci_options(*args) -> None:
+                    selected = pci_var.get()
+                    if selected and selected != "No PCI devices available" and "[IN USE" not in selected:
+                        # Extract base ID from selection
+                        pci_id = selected.split(" - ")[0].strip()
+                        base_id = ".".join(pci_id.split(".")[:-1]) if "." in pci_id else pci_id
+                        # Check if device has multiple functions
+                        functions = pci_device_functions.get(base_id, [])
+                        if len(functions) > 1:
+                            pci_all_functions_cb.pack(side=tk.LEFT, padx=(0, 10))
+                        else:
+                            pci_all_functions_cb.pack_forget()
+                
+                pci_var.trace_add("write", update_pci_options)
         
         device_type_var.trace_add("write", lambda *args: update_device_config_ui())
         update_device_config_ui()
@@ -765,19 +944,79 @@ def show_device_management(
                     return
             elif device_type == "PCI":
                 pci_var = getattr(device_config_frame, "pci_var", None)
+                pci_device_map = getattr(device_config_frame, "pci_device_map", {})
+                pci_mode_var = getattr(device_config_frame, "pci_mode_var", None)
+                pci_all_functions_var = getattr(device_config_frame, "pci_all_functions_var", None)
+                pci_rombar_var = getattr(device_config_frame, "pci_rombar_var", None)
+                pci_pcie_var = getattr(device_config_frame, "pci_pcie_var", None)
+                pci_primary_gpu_var = getattr(device_config_frame, "pci_primary_gpu_var", None)
+                
                 if pci_var and pci_var.get():
                     selected = pci_var.get()
-                    # Extract PCI ID from selection (format: "ID - Vendor - Device")
+                    # Check for conflicts
+                    if "[IN USE" in selected:
+                        from main import styled_warning
+                        styled_warning(
+                            "PCI Device In Use",
+                            "This PCI device is already in use by another VM. Please select a different device or remove it from the other VM first."
+                        )
+                        return
+                    
+                    # Extract PCI ID from selection (format: "ID - Vendor - Device [IN USE...]")
                     if " - " in selected:
                         pci_id = selected.split(" - ")[0].strip()
-                        # Proxmox PCI format: host=pci_id
-                        device_value = f"host={pci_id}"
+                        pci_info = pci_device_map.get(selected.split(" [IN USE")[0] if "[IN USE" in selected else selected)
+                        
+                        # Build PCI device value
+                        pci_parts = []
+                        
+                        # Mode: mapped or raw
+                        mode = pci_mode_var.get() if pci_mode_var else "mapped"
+                        if mode == "raw":
+                            pci_parts.append("host=" + pci_id)
+                        else:
+                            # Mapped mode - use base ID if all functions, otherwise specific ID
+                            if pci_all_functions_var and pci_all_functions_var.get() and pci_info:
+                                base_id = pci_info.get("base_id", pci_id)
+                                pci_parts.append("host=" + base_id)
+                            else:
+                                pci_parts.append("host=" + pci_id)
+                        
+                        # All functions (only for mapped mode)
+                        if mode == "mapped" and pci_all_functions_var and pci_all_functions_var.get():
+                            pci_parts.append("all=1")
+                        
+                        # ROM-Bar
+                        if pci_rombar_var and pci_rombar_var.get():
+                            pci_parts.append("rombar=1")
+                        else:
+                            pci_parts.append("rombar=0")
+                        
+                        # PCI-Express
+                        if pci_pcie_var and pci_pcie_var.get():
+                            pci_parts.append("pcie=1")
+                        
+                        # Primary GPU
+                        if pci_primary_gpu_var and pci_primary_gpu_var.get():
+                            pci_parts.append("x-vga=1")
+                        
+                        device_value = ",".join(pci_parts)
+                        
                         # Use hostpci0, hostpci1, etc. for PCI devices
                         # Find next PCI slot
                         pci_num = 0
                         while f"hostpci{pci_num}" in existing_keys:
                             pci_num += 1
                         new_device_key = f"hostpci{pci_num}"
+                        
+                        # Store PCI options for later reference
+                        new_device_pci_options = {
+                            "mode": mode,
+                            "all_functions": pci_all_functions_var.get() if pci_all_functions_var else False,
+                            "rombar": pci_rombar_var.get() if pci_rombar_var else False,
+                            "pcie": pci_pcie_var.get() if pci_pcie_var else False,
+                            "primary_gpu": pci_primary_gpu_var.get() if pci_primary_gpu_var else False,
+                        }
                     else:
                         from main import styled_warning
                         styled_warning("Invalid PCI Device", "Please select a PCI device.")
@@ -798,6 +1037,9 @@ def show_device_management(
             
             if iso_var_ref:
                 new_device["iso_var"] = iso_var_ref
+            
+            if device_type == "PCI" and "new_device_pci_options" in locals():
+                new_device["pci_options"] = new_device_pci_options
             
             device_list.append(new_device)
             render_device_list()
@@ -838,11 +1080,56 @@ def show_device_management(
                 vms = client.get_node_vms(node_name)
                 vm_runtime = next((vm for vm in vms if vm.get("vmid") == vmid), None)
                 if vm_runtime and vm_runtime.get("status") == "running":
-                    from main import styled_warning
-                    styled_warning(
-                        "VM Running",
-                        "Cannot modify device configuration while VM is running. Please stop the VM first."
-                    )
+                    def show_warning() -> None:
+                        from main import styled_warning
+                        styled_warning(
+                            "VM Running",
+                            "Cannot modify device configuration while VM is running. Please stop the VM first.",
+                            parent
+                        )
+                    parent.after(0, show_warning)
+                    return
+                
+                # Helper function to check PCI conflicts
+                def check_pci_conflict(pci_id: str) -> tuple[bool, list[int]]:
+                    """Check if PCI device is already in use by other VMs."""
+                    used_by: list[int] = []
+                    for vm_id, config in all_vm_configs.items():
+                        for key, value in config.items():
+                            if key.startswith("hostpci") and isinstance(value, str):
+                                # Extract PCI ID from value (format: "host=0000:00:05.0" or "0000:00:05.0")
+                                if "host=" in value:
+                                    config_pci_id = value.split("host=")[1].split(",")[0].strip()
+                                else:
+                                    config_pci_id = value.split(",")[0].strip()
+                                # Check if this PCI ID or any function matches
+                                if config_pci_id == pci_id or config_pci_id.startswith(pci_id.split(".")[0] + "."):
+                                    used_by.append(vm_id)
+                    return len(used_by) > 0, used_by
+                
+                # Check for PCI device conflicts before saving
+                pci_conflicts: list[tuple[str, list[int]]] = []
+                for device in device_list:
+                    if device.get("type") == "PCI" and device.get("enabled", True):
+                        device_value = device.get("value", "")
+                        if "host=" in device_value:
+                            pci_id = device_value.split("host=")[1].split(",")[0].strip()
+                            is_used, used_by_vms = check_pci_conflict(pci_id)
+                            if is_used:
+                                pci_conflicts.append((pci_id, used_by_vms))
+                
+                if pci_conflicts:
+                    def show_conflict_warning() -> None:
+                        conflict_messages = []
+                        for pci_id, vm_ids in pci_conflicts:
+                            conflict_messages.append(f"PCI device {pci_id} is in use by VM(s): {', '.join(map(str, vm_ids))}")
+                        from main import styled_warning
+                        styled_warning(
+                            "PCI Device Conflicts",
+                            "The following PCI devices are already in use by other VMs:\n\n" + "\n".join(conflict_messages) + "\n\nPlease remove them from other VMs first or select different devices.",
+                            parent
+                        )
+                    parent.after(0, show_conflict_warning)
                     return
                 
                 # Build new config
@@ -852,6 +1139,21 @@ def show_device_management(
                 # Process devices in new order
                 for device in device_list:
                     device_key = device["key"]
+                    device_enabled = device.get("enabled", True)
+                    actual_key = device.get("actual_key", device_key)
+                    
+                    # Handle enabling previously unused devices
+                    unused_key = f"unused{device_key}"
+                    if unused_key in vm_config:
+                        delete_keys.append(unused_key)
+                    
+                    # Skip disabled devices - they will be marked as unused
+                    if not device_enabled:
+                        # If device was previously enabled, mark as unused
+                        if device_key in vm_config and not device_key.startswith("unused"):
+                            delete_keys.append(device_key)
+                            new_config[unused_key] = device.get("value", "")
+                        continue
                     
                     if device["type"] == "CD/DVD" and "iso_var" in device:
                         new_iso = device["iso_var"].get()
@@ -861,11 +1163,24 @@ def show_device_management(
                             if part.strip():
                                 new_parts.append(part.strip())
                         new_config[device_key] = ",".join(new_parts)
+                    elif device["type"] == "PCI":
+                        # PCI devices - use the stored value directly
+                        pci_value = device.get("value", "")
+                        if pci_value:
+                            new_config[device_key] = pci_value
                     else:
                         new_config[device_key] = device.get("value", "")
                 
-                # Update boot order (exclude USB and PCI devices)
+                # Update boot order (exclude USB and PCI devices, and non-disk config keys)
                 boot_order = []
+                # Valid boot device prefixes and their lengths
+                valid_boot_prefixes = {
+                    "scsi": 4,
+                    "virtio": 6,
+                    "ide": 3,
+                    "sata": 4,
+                }
+                
                 for device in device_list:
                     if device.get("enabled", True):
                         device_key = device["key"]
@@ -873,18 +1188,24 @@ def show_device_management(
                         # USB and PCI devices don't participate in boot order
                         if device_type in ["USB", "PCI"]:
                             continue
-                        if device_key.startswith("scsi"):
-                            device_num = device_key[4:].split(":")[0] if ":" in device_key else device_key[4:]
-                            boot_order.append(f"scsi{device_num}")
-                        elif device_key.startswith("virtio"):
-                            device_num = device_key[6:].split(":")[0] if ":" in device_key else device_key[6:]
-                            boot_order.append(f"virtio{device_num}")
-                        elif device_key.startswith("ide"):
-                            device_num = device_key[3:].split(":")[0] if ":" in device_key else device_key[3:]
-                            boot_order.append(f"ide{device_num}")
-                        elif device_key.startswith("sata"):
-                            device_num = device_key[4:].split(":")[0] if ":" in device_key else device_key[4:]
-                            boot_order.append(f"sata{device_num}")
+                        
+                        # Check if this is a valid boot device (disk, not config key like scsihw)
+                        for prefix, prefix_len in valid_boot_prefixes.items():
+                            if device_key.startswith(prefix):
+                                # Extract device number (everything after the prefix)
+                                remaining = device_key[prefix_len:]
+                                # Check if it starts with a digit (valid device number)
+                                if remaining and remaining[0].isdigit():
+                                    # Extract just the number part (before any colon or other chars)
+                                    device_num = ""
+                                    for char in remaining:
+                                        if char.isdigit():
+                                            device_num += char
+                                        else:
+                                            break
+                                    if device_num:
+                                        boot_order.append(f"{prefix}{device_num}")
+                                break  # Found matching prefix, no need to check others
                 
                 if boot_order:
                     new_config["boot"] = "order=" + ";".join(boot_order)
@@ -892,16 +1213,22 @@ def show_device_management(
                 # Apply changes
                 client.update_vm_config(node_name, vmid, new_config)
                 
-                from main import styled_info
-                styled_info("Changes Saved", "Device configuration has been updated successfully.")
-                go_back()
+                def show_success() -> None:
+                    from main import styled_info
+                    styled_info("Changes Saved", "Device configuration has been updated successfully.", parent)
+                    go_back()
+                parent.after(0, show_success)
                 
             except ProxmoxAPIError as exc:
-                from main import styled_error
-                styled_error("Save Failed", f"Failed to save device changes:\n{exc}")
+                def show_error() -> None:
+                    from main import styled_error
+                    styled_error("Save Failed", f"Failed to save device changes:\n{exc}", parent)
+                parent.after(0, show_error)
             except Exception as exc:
-                from main import styled_error
-                styled_error("Save Failed", f"Error: {exc}")
+                def show_error() -> None:
+                    from main import styled_error
+                    styled_error("Save Failed", f"Error: {exc}", parent)
+                parent.after(0, show_error)
             finally:
                 if client:
                     client.close()
