@@ -13,6 +13,7 @@ from theme import (
     PROXMOX_LIGHT,
     PROXMOX_MEDIUM,
     PROXMOX_ORANGE,
+    get_theme_name,
 )
 
 
@@ -337,10 +338,10 @@ class SetupWizard(tk.Frame):
         # Entry styling
         style.configure(
             "Wizard.TEntry",
-            fieldbackground="#1f242b",
-            background="#1f242b",
+            fieldbackground=PROXMOX_DARK,
+            background=PROXMOX_DARK,
             foreground=PROXMOX_LIGHT,
-            bordercolor="#363c45",
+            bordercolor="#363c45" if get_theme_name() == "dark" else "#cccccc",
             insertcolor=PROXMOX_LIGHT,
             padding=8,
         )

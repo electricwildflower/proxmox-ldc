@@ -827,20 +827,30 @@ def build_view(parent: tk.Widget) -> tk.Frame:
                     
                     # Update filter dropdowns
                     # Update storage type filter
-                    storage_types = sorted(set(s.get("type", "") for s in storage_entries if s.get("type")))
-                    menu = card1_filter_type_menu["menu"]
-                    menu.delete(0, "end")
-                    menu.add_command(label="All", command=lambda: card1_filter_type_var.set("All") or apply_filters_and_sort())
-                    for stype in storage_types:
-                        menu.add_command(label=stype, command=lambda t=stype: card1_filter_type_var.set(t) or apply_filters_and_sort())
+                    try:
+                        storage_types = sorted(set(s.get("type", "") for s in storage_entries if s.get("type")))
+                        menu = card1_filter_type_menu["menu"]
+                        if menu is not None:
+                            menu.delete(0, "end")
+                            menu.add_command(label="All", command=lambda: card1_filter_type_var.set("All") or apply_filters_and_sort())
+                            for stype in storage_types:
+                                menu.add_command(label=stype, command=lambda t=stype: card1_filter_type_var.set(t) or apply_filters_and_sort())
+                    except (AttributeError, KeyError, TypeError):
+                        # Menu not accessible yet, skip update
+                        pass
                     
                     # Update VM disk storage filter
-                    vm_storages = sorted(set(d.get("storage", "") for d in vm_disks if d.get("storage")))
-                    menu2 = card2_filter_storage_menu["menu"]
-                    menu2.delete(0, "end")
-                    menu2.add_command(label="All", command=lambda: card2_filter_storage_var.set("All") or apply_filters_and_sort())
-                    for vstorage in vm_storages:
-                        menu2.add_command(label=vstorage, command=lambda s=vstorage: card2_filter_storage_var.set(s) or apply_filters_and_sort())
+                    try:
+                        vm_storages = sorted(set(d.get("storage", "") for d in vm_disks if d.get("storage")))
+                        menu2 = card2_filter_storage_menu["menu"]
+                        if menu2 is not None:
+                            menu2.delete(0, "end")
+                            menu2.add_command(label="All", command=lambda: card2_filter_storage_var.set("All") or apply_filters_and_sort())
+                            for vstorage in vm_storages:
+                                menu2.add_command(label=vstorage, command=lambda s=vstorage: card2_filter_storage_var.set(s) or apply_filters_and_sort())
+                    except (AttributeError, KeyError, TypeError):
+                        # Menu not accessible yet, skip update
+                        pass
                     
                     # Apply filters and sorting
                     apply_filters_and_sort()

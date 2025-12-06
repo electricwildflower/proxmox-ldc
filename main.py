@@ -31,6 +31,7 @@ from theme import (
     PROXMOX_LIGHT,
     PROXMOX_MEDIUM,
     PROXMOX_ORANGE,
+    get_theme_name,
 )
 from wizard import AccountStore, SetupWizard
 
@@ -1234,11 +1235,11 @@ def render_network_section(
         controls,
         textvariable=search_var,
         width=22,
-        bg="#1f242b",
+        bg=PROXMOX_DARK,
         fg=PROXMOX_LIGHT,
         insertbackground=PROXMOX_LIGHT,
         relief="flat",
-        highlightbackground="#3a414d",
+        highlightbackground="#3a414d" if get_theme_name() == "dark" else "#cccccc",
         highlightcolor=PROXMOX_ORANGE,
         highlightthickness=1,
         bd=0,
@@ -1331,7 +1332,7 @@ def render_network_section(
         ).pack(side=tk.LEFT)
 
         toggle_text = tk.StringVar(value="Details ▾")
-        details_frame = tk.Frame(parent, bg="#1f242b")
+        details_frame = tk.Frame(parent, bg=PROXMOX_DARK)
 
         def toggle_details(frame=details_frame, label_var=toggle_text, iface_data=iface, anchor=row) -> None:
             if frame.winfo_ismapped():
@@ -1384,14 +1385,14 @@ def render_network_section(
         ]
 
         for label, value in details:
-            row = tk.Frame(container_frame, bg="#1f242b")
+            row = tk.Frame(container_frame, bg=PROXMOX_DARK)
             row.pack(fill=tk.X, pady=1)
             tk.Label(
                 row,
                 text=f"{label}:",
                 font=("Segoe UI", 10, "bold"),
                 fg=PROXMOX_LIGHT,
-                bg="#1f242b",
+                bg=PROXMOX_DARK,
                 width=12,
                 anchor="w",
             ).pack(side=tk.LEFT)
@@ -1400,7 +1401,7 @@ def render_network_section(
                 text=value,
                 font=("Segoe UI", 10),
                 fg="#cfd3da",
-                bg="#1f242b",
+                bg=PROXMOX_DARK,
                 anchor="w",
             ).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
@@ -1470,11 +1471,11 @@ def render_storage_section(
         controls,
         textvariable=search_var,
         width=22,
-        bg="#1f242b",
+        bg=PROXMOX_DARK,
         fg=PROXMOX_LIGHT,
         insertbackground=PROXMOX_LIGHT,
         relief="flat",
-        highlightbackground="#3a414d",
+        highlightbackground="#3a414d" if get_theme_name() == "dark" else "#cccccc",
         highlightcolor=PROXMOX_ORANGE,
         highlightthickness=1,
         bd=0,
@@ -1555,7 +1556,7 @@ def render_storage_section(
         ).pack(side=tk.LEFT, padx=(0, 10))
 
         toggle_text = tk.StringVar(value="Details ▾")
-        details_frame = tk.Frame(parent, bg="#1f242b")
+        details_frame = tk.Frame(parent, bg=PROXMOX_DARK)
 
         def toggle_details(frame=details_frame, label_var=toggle_text, entry_data=entry, anchor=row) -> None:
             if frame.winfo_ismapped():
@@ -1597,14 +1598,14 @@ def render_storage_section(
         ]
 
         for label, value in details:
-            row = tk.Frame(container_frame, bg="#1f242b")
+            row = tk.Frame(container_frame, bg=PROXMOX_DARK)
             row.pack(fill=tk.X, pady=1)
             tk.Label(
                 row,
                 text=f"{label}:",
                 font=("Segoe UI", 10, "bold"),
                 fg=PROXMOX_LIGHT,
-                bg="#1f242b",
+                bg=PROXMOX_DARK,
                 width=12,
                 anchor="w",
             ).pack(side=tk.LEFT)
@@ -1613,7 +1614,7 @@ def render_storage_section(
                 text=value,
                 font=("Segoe UI", 10),
                 fg="#cfd3da",
-                bg="#1f242b",
+                bg=PROXMOX_DARK,
                 anchor="w",
             ).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
@@ -1656,19 +1657,19 @@ def render_vm_section(
     combobox_style.theme_use("clam")
     combobox_style.configure(
         "Proxmox.TCombobox",
-        fieldbackground="#1f242b",
-        background="#1f242b",
+        fieldbackground=PROXMOX_DARK,
+        background=PROXMOX_DARK,
         foreground=PROXMOX_LIGHT,
-        bordercolor="#3a414d",
+        bordercolor="#3a414d" if get_theme_name() == "dark" else "#cccccc",
         arrowcolor=PROXMOX_LIGHT,
         padding=5,
         relief="flat",
-        selectbackground="#2f3640",
+        selectbackground="#2f3640" if get_theme_name() == "dark" else "#e0e0e0",
         selectforeground=PROXMOX_LIGHT,
     )
     combobox_style.map(
         "Proxmox.TCombobox",
-        fieldbackground=[("readonly", "#1f242b")],
+        fieldbackground=[("readonly", PROXMOX_DARK)],
         foreground=[("readonly", PROXMOX_LIGHT)],
     )
 
@@ -1705,11 +1706,11 @@ def render_vm_section(
         controls,
         textvariable=search_var,
         width=22,
-        bg="#1f242b",
+        bg=PROXMOX_DARK,
         fg=PROXMOX_LIGHT,
         insertbackground=PROXMOX_LIGHT,
         relief="flat",
-        highlightbackground="#3a414d",
+        highlightbackground="#3a414d" if get_theme_name() == "dark" else "#cccccc",
         highlightcolor=PROXMOX_ORANGE,
         highlightthickness=1,
         bd=0,
@@ -1786,7 +1787,7 @@ def render_vm_section(
         ).pack(side=tk.LEFT, padx=(0, 10))
 
         toggle_text = tk.StringVar(value="Details ▾")
-        details_frame = tk.Frame(parent, bg="#1f242b")
+        details_frame = tk.Frame(parent, bg=PROXMOX_DARK)
 
         def toggle_details(frame=details_frame, label_var=toggle_text, vm_data=vm, anchor=row) -> None:
             if frame.winfo_ismapped():
@@ -1887,11 +1888,11 @@ def render_container_section(
         controls,
         textvariable=search_var,
         width=22,
-        bg="#1f242b",
+        bg=PROXMOX_DARK,
         fg=PROXMOX_LIGHT,
         insertbackground=PROXMOX_LIGHT,
         relief="flat",
-        highlightbackground="#3a414d",
+        highlightbackground="#3a414d" if get_theme_name() == "dark" else "#cccccc",
         highlightcolor=PROXMOX_ORANGE,
         highlightthickness=1,
         bd=0,
@@ -1968,7 +1969,7 @@ def render_container_section(
         ).pack(side=tk.LEFT, padx=(0, 10))
 
         toggle_text = tk.StringVar(value="Details ▾")
-        details_frame = tk.Frame(parent, bg="#1f242b")
+        details_frame = tk.Frame(parent, bg=PROXMOX_DARK)
 
         def toggle_details(frame=details_frame, label_var=toggle_text, ct_data=ct, anchor=row) -> None:
             if frame.winfo_ismapped():
@@ -2015,14 +2016,14 @@ def render_container_section(
         ]
 
         for label, value in details:
-            row = tk.Frame(container_frame, bg="#1f242b")
+            row = tk.Frame(container_frame, bg=PROXMOX_DARK)
             row.pack(fill=tk.X, pady=1)
             tk.Label(
                 row,
                 text=f"{label}:",
                 font=("Segoe UI", 10, "bold"),
                 fg=PROXMOX_LIGHT,
-                bg="#1f242b",
+                bg=PROXMOX_DARK,
                 width=12,
                 anchor="w",
             ).pack(side=tk.LEFT)
@@ -2031,7 +2032,7 @@ def render_container_section(
                 text=value,
                 font=("Segoe UI", 10),
                 fg="#cfd3da",
-                bg="#1f242b",
+                bg=PROXMOX_DARK,
                 anchor="w",
             ).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
@@ -2070,7 +2071,7 @@ def render_vm_details(container: tk.Frame, vm: dict[str, Any]) -> None:
     ]
 
     for label, value in details:
-        row = tk.Frame(container, bg="#1f242b")
+        row = tk.Frame(container, bg=PROXMOX_DARK)
         row.pack(fill=tk.X, pady=1)
         tk.Label(
             row,
@@ -2138,6 +2139,11 @@ def create_root_window() -> tk.Tk:
     root.option_add("*Menu.relief", "flat")
     root.option_add("*Menu.font", "Helvetica 11")
     root.option_add("*Menu.selectColor", PROXMOX_ACCENT)
+    
+    # Global button styling - remove borders
+    root.option_add("*Button.borderWidth", 0)
+    root.option_add("*Button.relief", "flat")
+    root.option_add("*Button.highlightThickness", 0)
 
     # Main area with left slide-out consoles panel and content canvas
     main_area = tk.Frame(root, bg=PROXMOX_DARK)
@@ -2910,21 +2916,6 @@ def setup_menu(root: tk.Tk) -> None:
         command=lambda: go_home(root),
     )
 
-    settings_menu = tk.Menu(menubar, **menu_kwargs)
-    settings_menu.add_command(
-        label="App Settings",
-        command=lambda: open_placeholder_view(root, build_app_settings_view, "App Settings"),
-    )
-    settings_menu.add_command(
-        label="Server Settings",
-        command=lambda: open_placeholder_view(root, build_server_settings_view, "Server Settings"),
-    )
-    settings_menu.add_command(
-        label="Shell",
-        command=lambda: open_placeholder_view(root, build_shell_view, "Shell"),
-    )
-    menubar.add_cascade(label="Settings", menu=settings_menu)
-
     # Disks menu
     disks_menu = tk.Menu(menubar, **menu_kwargs)
     disks_menu.add_command(
@@ -2962,6 +2953,22 @@ def setup_menu(root: tk.Tk) -> None:
         ),
     )
     menubar.add_cascade(label="Containers", menu=container_menu)
+
+    # Settings menu
+    settings_menu = tk.Menu(menubar, **menu_kwargs)
+    settings_menu.add_command(
+        label="App Settings",
+        command=lambda: open_placeholder_view(root, build_app_settings_view, "App Settings"),
+    )
+    settings_menu.add_command(
+        label="Server Settings",
+        command=lambda: open_placeholder_view(root, build_server_settings_view, "Server Settings"),
+    )
+    settings_menu.add_command(
+        label="Shell",
+        command=lambda: open_placeholder_view(root, build_shell_view, "Shell"),
+    )
+    menubar.add_cascade(label="Settings", menu=settings_menu)
 
     # Help menu
     help_menu = tk.Menu(menubar, **menu_kwargs)

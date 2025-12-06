@@ -7,7 +7,22 @@ from typing import Any
 
 from preferences import get_preference, set_preference
 from proxmox_client import ProxmoxAPIError, ProxmoxClient
-from theme import PROXMOX_DARK, PROXMOX_LIGHT, PROXMOX_MEDIUM, PROXMOX_ORANGE
+from theme import (
+    PROXMOX_DARK,
+    PROXMOX_LIGHT,
+    PROXMOX_MEDIUM,
+    PROXMOX_ORANGE,
+    BUTTON_PRIMARY_ACTIVE_BG,
+    BUTTON_SECONDARY_ACTIVE_BG,
+    BUTTON_SECONDARY_BG,
+    PANEL_BORDER,
+    STATUS_RUNNING,
+    STATUS_STOPPED,
+    TEXT_MUTED,
+    TEXT_WARNING_ALT,
+    TOGGLE_DISABLED_BG,
+    INPUT_BORDER,
+)
 
 
 def format_bytes(amount: int | float | None) -> str:
@@ -78,7 +93,7 @@ def show_container_details_window(
         font=("Segoe UI", 11, "bold"),
         bg=PROXMOX_MEDIUM,
         fg=PROXMOX_LIGHT,
-        activebackground="#3a414d",
+        activebackground=BUTTON_SECONDARY_ACTIVE_BG,
         activeforeground=PROXMOX_LIGHT,
         bd=0,
         padx=12,
@@ -95,7 +110,7 @@ def show_container_details_window(
     
     status = container_runtime.get("status", "unknown")
     running = str(status).lower() == "running"
-    status_color = "#4caf50" if running else "#f44336"
+    status_color = STATUS_RUNNING if running else STATUS_STOPPED
     status_text = "Running" if running else "Stopped"
     
     tk.Label(
@@ -171,7 +186,7 @@ def show_container_details_window(
             row,
             text=value,
             font=("Segoe UI", 10),
-            fg="#cfd3da",
+            fg=TEXT_MUTED,
             bg=PROXMOX_MEDIUM,
             anchor="w",
             wraplength=700,
@@ -288,7 +303,7 @@ def show_container_details_window(
                         content,
                         text=f"Error loading configuration: {error_msg}",
                         font=("Segoe UI", 11),
-                        fg="#f44336",
+                        fg=STATUS_STOPPED,
                         bg=PROXMOX_DARK,
                     ).pack(pady=20)
                     update_scrollregion()
@@ -505,14 +520,14 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         textvariable=search_var,
         width=40,
         font=("Segoe UI", 12),
-        bg="#1f242b",
+        bg=PROXMOX_DARK,
         fg=PROXMOX_LIGHT,
         insertbackground=PROXMOX_LIGHT,
         bd=0,
         relief="flat",
         highlightthickness=1,
         highlightcolor=PROXMOX_ORANGE,
-        highlightbackground="#363c45",
+        highlightbackground=INPUT_BORDER,
     )
     search_entry.pack(side=tk.LEFT, padx=(0, 10))
 
@@ -524,9 +539,9 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         text="Clear",
         command=clear_search,
         font=("Segoe UI", 10),
-        bg="#2f3640",
+        bg=BUTTON_SECONDARY_BG,
         fg=PROXMOX_LIGHT,
-        activebackground="#3a414d",
+        activebackground=BUTTON_SECONDARY_ACTIVE_BG,
         activeforeground=PROXMOX_LIGHT,
         bd=0,
         padx=12,
@@ -540,7 +555,7 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         font=("Segoe UI", 10, "bold"),
         bg=PROXMOX_ORANGE,
         fg="white",
-        activebackground="#ff8126",
+        activebackground=BUTTON_PRIMARY_ACTIVE_BG,
         activeforeground="white",
         bd=0,
         padx=16,
@@ -587,12 +602,12 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         bg=PROXMOX_MEDIUM,
         fg=PROXMOX_LIGHT,
         highlightthickness=1,
-        highlightbackground="#3a414d",
+        highlightbackground=INPUT_BORDER,
         activebackground=PROXMOX_ORANGE,
         activeforeground="white",
         width=20,
     )
-    sort_dropdown["menu"].configure(font=("Segoe UI", 11), bg="#2f3640", fg=PROXMOX_LIGHT)
+    sort_dropdown["menu"].configure(font=("Segoe UI", 11), bg=BUTTON_SECONDARY_BG, fg=PROXMOX_LIGHT)
 
     sort_dropdown.pack(side=tk.LEFT)
 
@@ -615,7 +630,7 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         header,
         textvariable=status_var,
         font=("Segoe UI", 10),
-        fg="#cfd3da",
+        fg=TEXT_MUTED,
         bg=PROXMOX_MEDIUM,
     ).pack(side=tk.RIGHT)
 
@@ -663,9 +678,9 @@ def build_view(parent: tk.Widget) -> tk.Frame:
             text="Cancel",
             command=lambda: choose(False),
             font=("Segoe UI", 11),
-            bg="#2f3640",
+            bg=BUTTON_SECONDARY_BG,
             fg=PROXMOX_LIGHT,
-            activebackground="#3a414d",
+            activebackground=BUTTON_SECONDARY_ACTIVE_BG,
             activeforeground=PROXMOX_LIGHT,
             bd=0,
             padx=16,
@@ -679,7 +694,7 @@ def build_view(parent: tk.Widget) -> tk.Frame:
             font=("Segoe UI", 11, "bold"),
             bg=PROXMOX_ORANGE,
             fg="white",
-            activebackground="#ff8126",
+            activebackground=BUTTON_PRIMARY_ACTIVE_BG,
             activeforeground="white",
             bd=0,
             padx=16,
@@ -721,7 +736,7 @@ def build_view(parent: tk.Widget) -> tk.Frame:
             font=("Segoe UI", 10, "bold"),
             bg=PROXMOX_ORANGE,
             fg="white",
-            activebackground="#ff8126",
+            activebackground=BUTTON_PRIMARY_ACTIVE_BG,
             activeforeground="white",
             bd=0,
             padx=16,
@@ -753,7 +768,7 @@ def build_view(parent: tk.Widget) -> tk.Frame:
                 rows_container,
                 text="No Proxmox data loaded yet. Use Refresh to fetch the latest containers.",
                 font=("Segoe UI", 12),
-                fg="#ffb74d",
+                fg=TEXT_WARNING_ALT,
                 bg=PROXMOX_MEDIUM,
                 wraplength=700,
                 justify=tk.LEFT,
@@ -765,7 +780,7 @@ def build_view(parent: tk.Widget) -> tk.Frame:
                 rows_container,
                 text="No containers match your search.",
                 font=("Segoe UI", 12),
-                fg="#cfd3da",
+                fg=TEXT_MUTED,
                 bg=PROXMOX_MEDIUM,
             ).pack(anchor=tk.CENTER, pady=20)
             return
@@ -969,7 +984,7 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         threading.Thread(target=worker, daemon=True).start()
 
     def render_container_row(ct: dict[str, Any]) -> None:
-        row = tk.Frame(rows_container, bg=PROXMOX_MEDIUM, highlightthickness=1, highlightbackground="#3c434e")
+        row = tk.Frame(rows_container, bg=PROXMOX_MEDIUM, highlightthickness=1, highlightbackground=PANEL_BORDER)
         row.pack(fill=tk.X, pady=6)
 
         info = tk.Frame(row, bg=PROXMOX_MEDIUM)
@@ -988,13 +1003,13 @@ def build_view(parent: tk.Widget) -> tk.Frame:
             info,
             text=f"CTID: {ct.get('vmid', 'N/A')}",
             font=("Segoe UI", 11),
-            fg="#cfd3da",
+            fg=TEXT_MUTED,
             bg=PROXMOX_MEDIUM,
         ).pack(anchor=tk.W, pady=(2, 0))
 
         status = ct.get("status", "unknown")
         running = str(status).lower() == "running"
-        status_color = "#4caf50" if running else "#f44336"
+        status_color = STATUS_RUNNING if running else STATUS_STOPPED
         status_text = "Running" if running else "Stopped"
 
         status_badge = tk.Label(
@@ -1018,9 +1033,9 @@ def build_view(parent: tk.Widget) -> tk.Frame:
                 command=command,
                 font=("Segoe UI", 10, "bold"),
                 state=tk.NORMAL if enabled else tk.DISABLED,
-                bg=PROXMOX_ORANGE if enabled else "#555a63",
+                bg=PROXMOX_ORANGE if enabled else TOGGLE_DISABLED_BG,
                 fg="white",
-                activebackground="#ff8126",
+                activebackground=BUTTON_PRIMARY_ACTIVE_BG,
                 activeforeground="white",
                 bd=0,
                 padx=12,
@@ -1320,7 +1335,7 @@ def build_view(parent: tk.Widget) -> tk.Frame:
                             font=("Segoe UI", 11, "bold"),
                             bg=PROXMOX_ORANGE,
                             fg="white",
-                            activebackground="#ff8126",
+                            activebackground=BUTTON_PRIMARY_ACTIVE_BG,
                             activeforeground="white",
                             bd=0,
                             padx=18,
@@ -1362,6 +1377,31 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         
         action_button("Open Console", lambda ct=ct: open_console(ct), True)
         action_button("View Info", lambda ct=ct: view_container_details(ct), True)
+        
+        def open_container_options(ct_obj: dict[str, Any]) -> None:
+            """Open container options window."""
+            from container_options import show_container_options
+            account = getattr(root, "app_state", {}).get("account") if hasattr(root, "app_state") else None
+            summary_obj = data_holder.get("summary")
+            if not account or not summary_obj:
+                messagebox.showerror("Unavailable", "Account or container data is not ready yet.", parent=root)
+                return
+            
+            vmid = ct_obj.get("vmid")
+            if vmid is None:
+                messagebox.showerror("Unknown Container", "Unable to determine the container ID.", parent=root)
+                return
+            
+            container_name = ct_obj.get("name") or f"Container {vmid}"
+            node_name = getattr(summary_obj, "node_name", None) or ct_obj.get("node")
+            
+            if not node_name:
+                messagebox.showerror("Unknown Node", "Unable to determine the node name.", parent=root)
+                return
+            
+            show_container_options(root, account, node_name, vmid, container_name, rows_container, render_container_rows)
+        
+        action_button("Options", lambda ct=ct: open_container_options(ct), True)
 
     def refresh_data(force: bool = False) -> None:
         app_state = getattr(root, "app_state", None)

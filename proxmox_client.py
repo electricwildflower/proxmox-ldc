@@ -213,6 +213,12 @@ class ProxmoxClient:
     def get_container_config(self, node: str, vmid: int | str) -> dict[str, Any]:
         return self._get(f"nodes/{node}/lxc/{vmid}/config").get("data", {})
 
+    def update_container_config(
+        self, node: str, vmid: int | str, config: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Update container configuration."""
+        return self._request("PUT", f"nodes/{node}/lxc/{vmid}/config", data=config).get("data", {})
+
     def start_container(self, node: str, vmid: int | str) -> dict[str, Any]:
         return self._request("POST", f"nodes/{node}/lxc/{vmid}/status/start", data={}).get("data", {})
 

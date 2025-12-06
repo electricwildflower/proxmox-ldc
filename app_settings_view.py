@@ -1,10 +1,22 @@
 import shutil
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 
 from preferences import get_preference, set_preference
-from theme import PROXMOX_DARK, PROXMOX_LIGHT, PROXMOX_MEDIUM, PROXMOX_ORANGE
+from theme import (
+    PROXMOX_DARK,
+    PROXMOX_LIGHT,
+    PROXMOX_MEDIUM,
+    PROXMOX_ORANGE,
+    apply_theme_to_widget,
+    get_theme_name,
+    reload_theme_colors,
+    save_theme_preference,
+    set_theme,
+    theme_color,
+    update_all_ttk_styles,
+)
 
 
 def build_view(parent: tk.Widget) -> tk.Frame:
@@ -91,13 +103,13 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         config_folder_frame,
         textvariable=config_dir_var,
         font=("Segoe UI", 11),
-        bg="#1f242b",
+        bg=PROXMOX_DARK,
         fg=PROXMOX_LIGHT,
         insertbackground=PROXMOX_LIGHT,
         bd=0,
         relief="flat",
         highlightthickness=1,
-        highlightbackground="#363c45",
+        highlightbackground="#363c45" if get_theme_name() == "dark" else "#cccccc",
         highlightcolor=PROXMOX_ORANGE,
     )
     config_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
@@ -363,13 +375,13 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         interval_frame,
         textvariable=interval_var,
         font=("Segoe UI", 11),
-        bg="#1f242b",
+        bg=PROXMOX_DARK,
         fg=PROXMOX_LIGHT,
         insertbackground=PROXMOX_LIGHT,
         bd=0,
         relief="flat",
         highlightthickness=1,
-        highlightbackground="#363c45",
+        highlightbackground="#363c45" if get_theme_name() == "dark" else "#cccccc",
         highlightcolor=PROXMOX_ORANGE,
         width=8,
     )
@@ -468,6 +480,161 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         bg=PROXMOX_MEDIUM,
     )
     refresh_status_label.pack(side=tk.LEFT, padx=(15, 0))
+
+    # Theme Settings Card
+    theme_card = tk.Frame(frame, bg=PROXMOX_MEDIUM)
+    theme_card.pack(fill=tk.X, padx=40, pady=(20, 0))
+
+    tk.Label(
+        theme_card,
+        text="Theme Settings",
+        font=("Segoe UI", 16, "bold"),
+        fg=PROXMOX_LIGHT,
+        bg=PROXMOX_MEDIUM,
+    ).pack(anchor=tk.W, pady=(20, 4), padx=20)
+
+    tk.Label(
+        theme_card,
+        text=(
+            "Choose your preferred color theme for the application. "
+            "Changes will take effect immediately, but some views may require navigation to fully update."
+        ),
+        font=("Segoe UI", 11),
+        fg="#cfd3da",
+        bg=PROXMOX_MEDIUM,
+        wraplength=760,
+        justify=tk.LEFT,
+    ).pack(anchor=tk.W, fill=tk.X, padx=20, pady=(0, 15))
+
+    theme_settings_frame = tk.Frame(theme_card, bg=PROXMOX_MEDIUM)
+    theme_settings_frame.pack(fill=tk.X, padx=20, pady=(0, 20))
+
+    tk.Label(
+        theme_settings_frame,
+        text="Theme:",
+        font=("Segoe UI", 11, "bold"),
+        fg=PROXMOX_LIGHT,
+        bg=PROXMOX_MEDIUM,
+        width=15,
+        anchor="w",
+    ).pack(side=tk.LEFT, padx=(0, 10))
+
+    current_theme = get_theme_name()
+    theme_var = tk.StringVar(value=current_theme)
+
+    theme_dropdown = ttk.Combobox(
+        theme_settings_frame,
+        textvariable=theme_var,
+        values=["dark", "light"],
+        state="readonly",
+        font=("Segoe UI", 11),
+        width=15,
+    )
+    theme_dropdown.pack(side=tk.LEFT, padx=(0, 10))
+    
+    # Style the combobox
+    combobox_bg = PROXMOX_DARK
+    style = ttk.Style()
+    style.theme_use("clam")
+    style.configure(
+        "TCombobox",
+        fieldbackground=combobox_bg,
+        background=combobox_bg,
+        foreground=PROXMOX_LIGHT,
+        borderwidth=0,
+        relief="flat",
+    )
+    style.map(
+        "TCombobox",
+        fieldbackground=[("readonly", combobox_bg)],
+        background=[("readonly", combobox_bg)],
+        foreground=[("readonly", PROXMOX_LIGHT)],
+    )
+
+    theme_status_var = tk.StringVar(value="")
+
+    def save_theme_settings() -> None:
+        """Save theme preference and apply it."""
+        selected_theme = theme_var.get()
+        
+        if selected_theme not in ["dark", "light"]:
+            messagebox.showerror(
+                "Invalid Theme",
+                "Please select a valid theme.",
+                parent=root,
+            )
+            return
+        
+        # Save to global preferences
+        save_theme_preference(selected_theme)
+        
+        # Also save to account preferences if available
+        set_preference(root, "theme", selected_theme)
+        
+        # Apply the theme
+        set_theme(selected_theme)
+        reload_theme_colors()
+        
+        # Update root window colors
+        try:
+            root.configure(bg=PROXMOX_DARK)
+            # Update menu colors
+            root.option_add("*Menu.background", PROXMOX_MEDIUM)
+            root.option_add("*Menu.foreground", PROXMOX_LIGHT)
+            root.option_add("*Menu.activeBackground", PROXMOX_ORANGE)
+            root.option_add("*Menu.activeForeground", "white")
+            
+            # Update main area and canvas
+            if hasattr(root, "content_canvas"):
+                root.content_canvas.configure(bg=PROXMOX_DARK)
+            if hasattr(root, "content_frame"):
+                root.content_frame.configure(bg=PROXMOX_DARK)
+            
+            # Update all ttk styles
+            update_all_ttk_styles(root)
+            
+            # Force update root and main containers first
+            root.update_idletasks()
+            
+            # Recursively update all widgets in the entire application
+            apply_theme_to_widget(root)
+            
+            # Force a refresh of the current view
+            root.update_idletasks()
+            
+        except Exception as e:
+            # If update fails, still show success message
+            import traceback
+            print(f"Theme update error: {e}")
+            traceback.print_exc()
+        
+        theme_status_var.set("Theme changed successfully!")
+
+    save_theme_button_frame = tk.Frame(theme_card, bg=PROXMOX_MEDIUM)
+    save_theme_button_frame.pack(fill=tk.X, padx=20, pady=(0, 10))
+
+    tk.Button(
+        save_theme_button_frame,
+        text="Save Theme",
+        command=save_theme_settings,
+        font=("Segoe UI", 11, "bold"),
+        bg=PROXMOX_ORANGE,
+        fg="white",
+        activebackground="#ff8126",
+        activeforeground="white",
+        bd=0,
+        padx=16,
+        pady=8,
+    ).pack(side=tk.LEFT)
+
+    theme_status_label = tk.Label(
+        save_theme_button_frame,
+        textvariable=theme_status_var,
+        font=("Segoe UI", 10),
+        fg="#7ddc88",
+        bg=PROXMOX_MEDIUM,
+    )
+    theme_status_label.pack(side=tk.LEFT, padx=(15, 0))
 
     return frame
 

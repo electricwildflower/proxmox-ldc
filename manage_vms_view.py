@@ -7,7 +7,14 @@ from typing import Any
 
 from preferences import get_preference, set_preference
 from proxmox_client import ProxmoxAPIError, ProxmoxClient
-from theme import PROXMOX_DARK, PROXMOX_LIGHT, PROXMOX_MEDIUM, PROXMOX_ORANGE
+from theme import (
+    PROXMOX_DARK,
+    PROXMOX_LIGHT,
+    PROXMOX_MEDIUM,
+    PROXMOX_ORANGE,
+    theme_color,
+)
+from ui_colors import get_ui_colors
 from vm_console_launcher import launch_vm_console
 
 
@@ -57,6 +64,8 @@ def show_vm_details_window(
     # Clear the rows container
     for child in rows_container.winfo_children():
         child.destroy()
+
+    colors = get_ui_colors()
     
     # Create a container for the details view
     details_container = tk.Frame(rows_container, bg=PROXMOX_DARK)
@@ -79,7 +88,7 @@ def show_vm_details_window(
         font=("Segoe UI", 11, "bold"),
         bg=PROXMOX_MEDIUM,
         fg=PROXMOX_LIGHT,
-        activebackground="#3a414d",
+        activebackground=colors.button_secondary_active_bg,
         activeforeground=PROXMOX_LIGHT,
         bd=0,
         padx=12,
@@ -96,7 +105,7 @@ def show_vm_details_window(
     
     status = vm_runtime.get("status", "unknown")
     running = str(status).lower() == "running"
-    status_color = "#4caf50" if running else "#f44336"
+    status_color = colors.status_running if running else colors.status_stopped
     status_text = "Running" if running else "Stopped"
     
     tk.Label(
@@ -172,7 +181,7 @@ def show_vm_details_window(
             row,
             text=value,
             font=("Segoe UI", 10),
-            fg="#cfd3da",
+            fg=colors.text_muted,
             bg=PROXMOX_MEDIUM,
             anchor="w",
             wraplength=700,
@@ -305,7 +314,7 @@ def show_vm_details_window(
                         content,
                         text=f"Error loading configuration: {error_msg}",
                         font=("Segoe UI", 11),
-                        fg="#f44336",
+                        fg=colors.status_stopped,
                         bg=PROXMOX_DARK,
                     ).pack(pady=20)
                     update_scrollregion()
@@ -484,6 +493,7 @@ def _get_active_proxmox_config(account: dict | None) -> dict | None:
 def build_view(parent: tk.Widget) -> tk.Frame:
     root = parent.winfo_toplevel()
     frame = tk.Frame(parent, bg=PROXMOX_DARK)
+    colors = get_ui_colors()
 
     title = tk.Label(
         frame,
@@ -515,14 +525,14 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         textvariable=search_var,
         width=40,
         font=("Segoe UI", 12),
-        bg="#1f242b",
+        bg=PROXMOX_DARK,
         fg=PROXMOX_LIGHT,
         insertbackground=PROXMOX_LIGHT,
         bd=0,
         relief="flat",
         highlightthickness=1,
         highlightcolor=PROXMOX_ORANGE,
-        highlightbackground="#363c45",
+        highlightbackground=colors.input_border,
     )
     search_entry.pack(side=tk.LEFT, padx=(0, 10))
 
@@ -534,9 +544,9 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         text="Clear",
         command=clear_search,
         font=("Segoe UI", 10),
-        bg="#2f3640",
+        bg=colors.button_secondary_bg,
         fg=PROXMOX_LIGHT,
-        activebackground="#3a414d",
+        activebackground=colors.button_secondary_active_bg,
         activeforeground=PROXMOX_LIGHT,
         bd=0,
         padx=12,
@@ -550,7 +560,7 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         font=("Segoe UI", 10, "bold"),
         bg=PROXMOX_ORANGE,
         fg="white",
-        activebackground="#ff8126",
+        activebackground=colors.button_primary_active_bg,
         activeforeground="white",
         bd=0,
         padx=16,
@@ -597,12 +607,16 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         bg=PROXMOX_MEDIUM,
         fg=PROXMOX_LIGHT,
         highlightthickness=1,
-        highlightbackground="#3a414d",
+        highlightbackground=colors.input_border,
         activebackground=PROXMOX_ORANGE,
         activeforeground="white",
         width=20,
     )
-    sort_dropdown["menu"].configure(font=("Segoe UI", 11), bg="#2f3640", fg=PROXMOX_LIGHT)
+    sort_dropdown["menu"].configure(
+        font=("Segoe UI", 11),
+        bg=colors.button_secondary_bg,
+        fg=PROXMOX_LIGHT,
+    )
 
     sort_dropdown.pack(side=tk.LEFT)
 
@@ -625,7 +639,7 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         header,
         textvariable=status_var,
         font=("Segoe UI", 10),
-        fg="#cfd3da",
+        fg=colors.text_muted,
         bg=PROXMOX_MEDIUM,
     ).pack(side=tk.RIGHT)
 
@@ -673,9 +687,9 @@ def build_view(parent: tk.Widget) -> tk.Frame:
             text="Cancel",
             command=lambda: choose(False),
             font=("Segoe UI", 11),
-            bg="#2f3640",
+            bg=colors.button_secondary_bg,
             fg=PROXMOX_LIGHT,
-            activebackground="#3a414d",
+            activebackground=colors.button_secondary_active_bg,
             activeforeground=PROXMOX_LIGHT,
             bd=0,
             padx=16,
@@ -689,7 +703,7 @@ def build_view(parent: tk.Widget) -> tk.Frame:
             font=("Segoe UI", 11, "bold"),
             bg=PROXMOX_ORANGE,
             fg="white",
-            activebackground="#ff8126",
+            activebackground=colors.button_primary_active_bg,
             activeforeground="white",
             bd=0,
             padx=16,
@@ -731,7 +745,7 @@ def build_view(parent: tk.Widget) -> tk.Frame:
             font=("Segoe UI", 10, "bold"),
             bg=PROXMOX_ORANGE,
             fg="white",
-            activebackground="#ff8126",
+            activebackground=colors.button_primary_active_bg,
             activeforeground="white",
             bd=0,
             padx=16,
@@ -763,7 +777,7 @@ def build_view(parent: tk.Widget) -> tk.Frame:
                 rows_container,
                 text="No Proxmox data loaded yet. Use Refresh to fetch the latest virtual machines.",
                 font=("Segoe UI", 12),
-                fg="#ffb74d",
+                fg=colors.text_warning_alt,
                 bg=PROXMOX_MEDIUM,
                 wraplength=700,
                 justify=tk.LEFT,
@@ -775,7 +789,7 @@ def build_view(parent: tk.Widget) -> tk.Frame:
                 rows_container,
                 text="No virtual machines match your search.",
                 font=("Segoe UI", 12),
-                fg="#cfd3da",
+                fg=colors.text_muted,
                 bg=PROXMOX_MEDIUM,
             ).pack(anchor=tk.CENTER, pady=20)
             return
@@ -1160,7 +1174,12 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         threading.Thread(target=worker, daemon=True).start()
 
     def render_vm_row(vm: dict[str, Any]) -> None:
-        row = tk.Frame(rows_container, bg=PROXMOX_MEDIUM, highlightthickness=1, highlightbackground="#3c434e")
+        row = tk.Frame(
+            rows_container,
+            bg=PROXMOX_MEDIUM,
+            highlightthickness=1,
+            highlightbackground=colors.panel_border,
+        )
         row.pack(fill=tk.X, pady=6)
 
         info = tk.Frame(row, bg=PROXMOX_MEDIUM)
@@ -1179,13 +1198,13 @@ def build_view(parent: tk.Widget) -> tk.Frame:
             info,
             text=f"VMID: {vm.get('vmid', 'N/A')}",
             font=("Segoe UI", 11),
-            fg="#cfd3da",
+            fg=colors.text_muted,
             bg=PROXMOX_MEDIUM,
         ).pack(anchor=tk.W, pady=(2, 0))
 
         status = vm.get("status", "unknown")
         running = str(status).lower() == "running"
-        status_color = "#4caf50" if running else "#f44336"
+        status_color = colors.status_running if running else colors.status_stopped
         status_text = "Running" if running else "Stopped"
 
         status_badge = tk.Label(
@@ -1200,23 +1219,131 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         status_badge.pack(side=tk.LEFT, padx=(0, 10))
 
         actions = tk.Frame(row, bg=PROXMOX_MEDIUM)
-        actions.pack(side=tk.RIGHT, padx=10, pady=12)
-
+        actions.pack(side=tk.RIGHT, padx=10, pady=12, fill=tk.NONE, expand=False)
+        
+        # Store buttons for wrapping
+        button_widgets: list[tk.Button] = []
+        
         def action_button(label: str, command, enabled: bool) -> None:
-            tk.Button(
+            btn = tk.Button(
                 actions,
                 text=label,
                 command=command,
                 font=("Segoe UI", 10, "bold"),
                 state=tk.NORMAL if enabled else tk.DISABLED,
-                bg=PROXMOX_ORANGE if enabled else "#555a63",
+                bg=PROXMOX_ORANGE if enabled else colors.toggle_disabled_bg,
                 fg="white",
-                activebackground="#ff8126",
+                activebackground=colors.button_primary_active_bg,
                 activeforeground="white",
                 bd=0,
                 padx=12,
                 pady=6,
-            ).pack(side=tk.LEFT, padx=4)
+            )
+            button_widgets.append(btn)
+        
+        # Flag to prevent recursion
+        wrapping = False
+        
+        def wrap_buttons() -> None:
+            """Wrap buttons to multiple rows based on available width."""
+            nonlocal wrapping
+            if wrapping or not button_widgets:
+                return
+            
+            try:
+                # Check if widgets still exist
+                if not actions.winfo_exists():
+                    return
+                
+                wrapping = True
+                
+                # Clear existing grid - use try/except to handle destroyed widgets
+                try:
+                    for widget in list(actions.winfo_children()):
+                        try:
+                            widget.grid_forget()
+                        except (tk.TclError, AttributeError):
+                            pass
+                except (tk.TclError, AttributeError):
+                    pass
+                
+                # Get available width from the row, accounting for info section and padding
+                try:
+                    row.update_idletasks()
+                    row_width = row.winfo_width()
+                    if row_width < 100:  # Not yet sized, use a reasonable default
+                        row_width = 800
+                    
+                    # Estimate info section width (name + VMID + padding)
+                    info_width = 300  # Approximate width of info section
+                    available_width = row_width - info_width - 40  # Account for padding and margins
+                    if available_width < 150:  # Minimum width check
+                        available_width = 150
+                except (tk.TclError, AttributeError):
+                    available_width = 300  # Fallback width
+                
+                # Calculate button widths and positions
+                current_row = 0
+                current_col = 0
+                current_row_width = 0
+                button_padding = 4
+                
+                for btn in button_widgets:
+                    try:
+                        # Check if button still exists
+                        if not btn.winfo_exists():
+                            continue
+                        
+                        btn.update_idletasks()
+                        btn_width = btn.winfo_reqwidth()
+                        
+                        # Check if button fits on current row
+                        if current_row_width + btn_width > available_width and current_col > 0:
+                            # Move to next row
+                            current_row += 1
+                            current_col = 0
+                            current_row_width = 0
+                        
+                        # Place button
+                        btn.grid(row=current_row, column=current_col, padx=button_padding, pady=2, sticky="w")
+                        current_row_width += btn_width + (button_padding * 2)
+                        current_col += 1
+                    except (tk.TclError, AttributeError):
+                        continue
+            finally:
+                wrapping = False
+        
+        # Bind resize event to wrap buttons with debouncing
+        resize_scheduled = False
+        
+        def delayed_wrap() -> None:
+            nonlocal resize_scheduled
+            resize_scheduled = False
+            wrap_buttons()
+        
+        def on_resize(event: tk.Event) -> None:
+            nonlocal resize_scheduled
+            # Only wrap if width changed significantly and not already wrapping
+            if wrapping or resize_scheduled:
+                return
+            try:
+                if not row.winfo_exists():
+                    return
+                
+                if hasattr(on_resize, 'last_width'):
+                    if abs(event.width - on_resize.last_width) > 10:  # Only if width changed by more than 10px
+                        resize_scheduled = True
+                        on_resize.last_width = event.width
+                        root.after(100, delayed_wrap)
+                else:
+                    on_resize.last_width = event.width
+                    resize_scheduled = True
+                    root.after(100, delayed_wrap)
+            except (tk.TclError, AttributeError):
+                resize_scheduled = False
+        
+        # Only bind to row, not actions, to avoid multiple triggers
+        row.bind("<Configure>", on_resize)
 
         action_button("Start", lambda vm=vm: perform_vm_action("start", vm), not running)
         action_button("Stop", lambda vm=vm: perform_vm_action("stop", vm), running)
@@ -1421,6 +1548,31 @@ def build_view(parent: tk.Widget) -> tk.Frame:
         action_button("Open Console", lambda vm=vm: open_console(vm), True)
         action_button("View Info", lambda vm=vm: view_vm_details(vm), True)
         
+        def open_vm_options(vm_obj: dict[str, Any]) -> None:
+            """Open VM options window."""
+            from vm_options import show_vm_options
+            account = getattr(root, "app_state", {}).get("account") if hasattr(root, "app_state") else None
+            summary_obj = data_holder.get("summary")
+            if not account or not summary_obj:
+                messagebox.showerror("Unavailable", "Account or VM data is not ready yet.", parent=root)
+                return
+            
+            vmid = vm_obj.get("vmid")
+            if vmid is None:
+                messagebox.showerror("Unknown VM", "Unable to determine the VM ID.", parent=root)
+                return
+            
+            vm_name = vm_obj.get("name") or f"VM {vmid}"
+            node_name = getattr(summary_obj, "node_name", None) or vm_obj.get("node")
+            
+            if not node_name:
+                messagebox.showerror("Unknown Node", "Unable to determine the node name.", parent=root)
+                return
+            
+            show_vm_options(root, account, node_name, vmid, vm_name, rows_container, render_vm_rows)
+        
+        action_button("Options", lambda vm=vm: open_vm_options(vm), True)
+        
         def open_device_management(vm_obj: dict[str, Any]) -> None:
             """Open device management window for a VM."""
             from vm_device_management import show_device_management
@@ -1445,6 +1597,17 @@ def build_view(parent: tk.Widget) -> tk.Frame:
             show_device_management(root, account, node_name, vmid, vm_name, rows_container, render_vm_rows)
         
         action_button("Device Management", lambda vm=vm: open_device_management(vm), True)
+        
+        # Initial wrap after all buttons are created and UI is updated
+        def initial_wrap() -> None:
+            try:
+                if row.winfo_exists():
+                    row.update_idletasks()
+                    wrap_buttons()
+            except (tk.TclError, AttributeError):
+                pass
+        
+        root.after(100, initial_wrap)  # Small delay to ensure UI is rendered
 
     def refresh_data(force: bool = False) -> None:
         app_state = getattr(root, "app_state", None)

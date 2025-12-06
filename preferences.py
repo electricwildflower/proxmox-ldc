@@ -28,10 +28,10 @@ def get_preference(root: Any, key: str, default: str) -> str:
     value = prefs.get(key)
     if value is None:
         return default
-    return value
+    return str(value)
 
 
-def set_preference(root: Any, key: str, value: str) -> None:
+def set_preference(root: Any, key: str, value: str | bool | int) -> None:
     account = _get_account(root)
     if account is None:
         return
